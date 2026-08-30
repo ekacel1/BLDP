@@ -1,0 +1,63 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "bldp"
+version = "0.1.0"
+description = "Benin Legal Data Pipeline — transforme des documents juridiques bruts en corpus structuré exploitable par un système RAG."
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "BLDP contributors" }]
+keywords = ["legal", "nlp", "ocr", "pdf", "rag", "benin", "corpus"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Legal Industry",
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Topic :: Text Processing :: Linguistic",
+]
+
+# Dépendances strictement nécessaires au coeur du pipeline (extraction -> export).
+dependencies = [
+  "PyMuPDF>=1.24",
+  "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+# OCR : nécessite en plus les binaires système `tesseract` et `ocrmypdf`.
+ocr = ["ocrmypdf>=16.0", "pytesseract>=0.3.10", "Pillow>=10.0"]
+# Embeddings + base vectorielle (optionnels, désactivés par défaut).
+embeddings = ["sentence-transformers>=3.0", "numpy>=1.26"]
+faiss = ["faiss-cpu>=1.8", "numpy>=1.26"]
+# Interface web minimale.
+web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9", "jinja2>=3.1"]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+all = [
+  "ocrmypdf>=16.0", "pytesseract>=0.3.10", "Pillow>=10.0",
+  "sentence-transformers>=3.0", "faiss-cpu>=1.8", "numpy>=1.26",
+  "fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9", "jinja2>=3.1",
+  "pytest>=8.0", "pytest-cov>=5.0",
+]
+
+[project.scripts]
+bldp = "bldp.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/OWNER/bldp"
+Issues = "https://github.com/OWNER/bldp/issues"
+
+[tool.setuptools.packages.find]
+include = ["bldp*"]
+
+[tool.setuptools.package-data]
+bldp = ["../config/*.yaml", "web/templates/*.html", "web/static/*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = [
+  "requires_ocr: test nécessitant les binaires OCR (tesseract/ocrmypdf)",
+  "requires_embeddings: test nécessitant sentence-transformers",
+]

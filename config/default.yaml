@@ -1,0 +1,156 @@
+# ---------------------------------------------------------------------------
+# BLDP — configuration par défaut
+# Ne pas éditer ce fichier : créez `config/local.yaml` (ou passez --config)
+# avec uniquement les clés à surcharger. La fusion est récursive.
+# ---------------------------------------------------------------------------
+
+project:
+  name: "Benin Legal Data Pipeline"
+  # Juridiction active -> sélectionne les règles dans bldp/jurisdictions/
+  jurisdiction: "benin"
+  language: "fr"
+
+paths:
+  input: "input"
+  data: "data"
+  raw: "data/raw"
+  processed: "data/processed"
+  validated: "data/validated"
+  embeddings: "data/embeddings"
+  exports: "data/exports"
+  logs: "logs"
+  database: "data/exports/legal_database.sqlite"
+
+ingest:
+  extensions: [".pdf"]          # .docx/.txt/.html prévus ultérieurement
+  recursive: true
+  # Copier les originaux dans data/raw/ (les sources ne sont jamais modifiées)
+  copy_to_raw: true
+  follow_symlinks: false
+
+# --- Module 2 : analyse du PDF / décision OCR --------------------------------
+classifier:
+  # Une page est considérée "textuelle" au-delà de ce nombre de caractères.
+  min_chars_per_page: 100
+  # Part minimale de pages textuelles pour se passer d'OCR.
+  min_text_page_ratio: 0.60
+  # En dessous de ce ratio de caractères alphabétiques, le texte est suspect.
+  min_alpha_ratio: 0.55
+  # Nombre de pages échantillonnées pour l'analyse (0 = toutes).
+  sample_pages: 0
+
+# --- Module 4 : OCR ----------------------------------------------------------
+ocr:
+  enabled: true
+  engine: "ocrmypdf"            # ocrmypdf | tesseract
+  language: "fra"
+  dpi: 300
+  # Ne jamais ré-OCRiser une page qui contient déjà du texte natif.
+  skip_text: true
+  timeout_seconds: 1800
+  # Conserver le PDF OCRisé pour audit
+  keep_sidecar_pdf: true
+
+# --- Module 4 : nettoyage ----------------------------------------------------
+cleaning:
+  normalize_unicode: true        # NFC
+  collapse_whitespace: true
+  strip_control_chars: true
+  fix_hyphenation: true          # « respon-\nsabilité » -> « responsabilité »
+  join_wrapped_lines: true       # retours à la ligne artificiels
+  remove_page_numbers: true
+  remove_repeated_headers: true
+  remove_repeated_footers: true
+  # Une ligne répétée sur au moins ce ratio de pages est un en-tête/pied.
+  header_footer_min_ratio: 0.55
+  header_footer_zone_lines: 3    # lignes examinées en haut/bas de page
+  # Corrections OCR usuelles (appliquées uniquement si le document est OCRisé)
+  ocr_confusion_fixes: true
+  # Sécurité : ne jamais toucher aux lignes ressemblant à du contenu juridique.
+  protect_legal_content: true
+
+# --- Modules 5 & 6 : parser juridique ---------------------------------------
+parser:
+  detect_articles: true
+  detect_hierarchy: true
+  detect_alineas: true
+  # Un article plus court que ceci est signalé comme potentiellement incomplet.
+  min_article_chars: 20
+  # Un article plus long que ceci est signalé comme potentiellement fusionné.
+  max_article_chars: 40000
+  # Vérifier la continuité de la numérotation des articles.
+  check_numbering: true
+
+# --- Module 7 : métadonnées --------------------------------------------------
+metadata:
+  # Nombre de pages de tête analysées pour extraire titre/numéro/date.
+  header_pages: 2
+  default_jurisdiction: "Benin"
+  default_source: "inconnu"
+  # Si aucune date n'est trouvée, ne pas deviner : laisser null et signaler.
+  guess_missing: false
+
+# --- Module 9 : doublons -----------------------------------------------------
+dedup:
+  file_hash: true
+  text_hash: true
+  # Similarité approximative (MinHash/shingles) — 0 pour désactiver.
+  similarity_threshold: 0.90
+  shingle_size: 5
+  # Les doublons sont marqués, jamais supprimés.
+  action: "flag"
+
+# --- Module 10 : contrôle qualité -------------------------------------------
+quality:
+  minimum_score: 0.90
+  # En dessous de ce score, statut = review_required
+  review_threshold: 0.75
+  # En dessous de ce score, statut = failed
+  reject_threshold: 0.50
+  max_empty_page_ratio: 0.10
+  max_suspect_char_ratio: 0.02
+
+# --- Module 8 : statuts et relations ----------------------------------------
+relations:
+  detect: true
+  # Confiance minimale pour enregistrer une relation sans validation humaine.
+  min_confidence: 0.80
+
+# --- Module 20 : chunking ----------------------------------------------------
+chunking:
+  strategy: "article"           # article | alinea | fixed
+  max_chars: 1500
+  overlap_chars: 150
+  # Ne jamais couper au milieu d'une phrase si possible.
+  respect_sentences: true
+
+# --- Module 19 : embeddings (optionnel, désactivé par défaut) ----------------
+embeddings:
+  enabled: false
+  model: "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+  batch_size: 32
+  device: "cpu"
+  normalize: true
+
+vectorstore:
+  enabled: false
+  backend: "faiss"              # faiss | qdrant (ultérieurement)
+  index_path: "data/embeddings/faiss.index"
+  metric: "cosine"
+
+export:
+  formats: ["jsonl", "sqlite", "json"]
+  pretty_json: true
+  # Inclure le texte intégral des pages dans les exports
+  include_page_text: true
+
+logging:
+  level: "INFO"                 # DEBUG | INFO | WARNING | ERROR
+  to_file: true
+  file: "logs/bldp.log"
+  json_lines: false
+
+# --- §27 Confidentialité -----------------------------------------------------
+privacy:
+  # Aucun document ne quitte la machine tant que ceci vaut false.
+  allow_external_calls: false

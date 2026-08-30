@@ -1,0 +1,10 @@
+# Coeur du pipeline — suffisant pour : ingest, process, validate, export.
+PyMuPDF>=1.24
+PyYAML>=6.0
+
+# Extras : voir pyproject.toml
+#   pip install -e ".[ocr]"         OCR (requiert tesseract + ocrmypdf système)
+#   pip install -e ".[embeddings]"  embeddings Sentence Transformers
+#   pip install -e ".[faiss]"       index vectoriel FAISS
+#   pip install -e ".[web]"         interface web FastAPI
+#   pip install -e ".[dev]"         tests

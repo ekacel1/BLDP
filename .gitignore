@@ -1,0 +1,41 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.env
+
+# ---------------------------------------------------------------------------
+# Données : jamais versionnées.
+#
+# Les documents juridiques traités et les sorties du pipeline restent locaux.
+# La ligne `!<dossier>/**/` est indispensable : sans elle, Git ne redescend pas
+# dans un dossier exclu et les `.gitkeep` seraient perdus avec le reste.
+# ---------------------------------------------------------------------------
+input/**
+!input/**/
+!input/**/.gitkeep
+
+data/**
+!data/**/
+!data/**/.gitkeep
+
+logs/*
+!logs/.gitkeep
+
+# Configuration propre à la machine
+config/local.yaml
+
+# Outils
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

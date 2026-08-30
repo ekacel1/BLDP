@@ -1,0 +1,65 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    name: Python ${{ matrix.python-version }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python-version: ["3.11", "3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      # Le coeur du pipeline doit fonctionner sans OCR ni embeddings :
+      # on installe volontairement le minimum plus les extras web et dev.
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,web]"
+
+      - name: Diagnostic de l'environnement
+        run: python -m bldp doctor
+
+      - name: Suite de tests
+        run: python -m pytest -q
+
+  ocr:
+    name: Tests avec OCR (Ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Installer Tesseract et Ghostscript
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr tesseract-ocr-fra ghostscript
+
+      - name: Installer les dépendances
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,ocr,web]"
+
+      - name: Diagnostic
+        run: python -m bldp doctor
+
+      - name: Suite complète, marqueurs OCR inclus
+        run: python -m pytest -q

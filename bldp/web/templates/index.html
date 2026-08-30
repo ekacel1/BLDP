@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BLDP — Benin Legal Data Pipeline</title>
+<!--
+  Aucune ressource externe : pas de CDN, pas de police distante, pas d'appel
+  réseau sortant. Tout est servi localement (§27 du cahier des charges).
+-->
+<style>
+  :root {
+    --fond: #f7f7f5;
+    --carte: #ffffff;
+    --trait: #d9d9d4;
+    --texte: #1f2124;
+    --doux: #6b6f76;
+    --accent: #1f5c8b;
+    --ok: #2e7d4f;
+    --alerte: #a8630c;
+    --erreur: #b3261e;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font: 15px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    background: var(--fond);
+    color: var(--texte);
+  }
+  header {
+    background: var(--carte);
+    border-bottom: 1px solid var(--trait);
+    padding: 14px 24px;
+    display: flex;
+    align-items: baseline;
+    gap: 12px;
+    flex-wrap: wrap;
+  }
+  header h1 { font-size: 17px; margin: 0; }
+  header .meta { color: var(--doux); font-size: 13px; }
+  main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  section {
+    background: var(--carte);
+    border: 1px solid var(--trait);
+    border-radius: 6px;
+    padding: 18px 20px;
+    margin-bottom: 20px;
+  }
+  h2 { font-size: 15px; margin: 0 0 12px; letter-spacing: .01em; }
+  button {
+    font: inherit;
+    padding: 7px 14px;
+    border: 1px solid var(--trait);
+    background: var(--carte);
+    border-radius: 4px;
+    cursor: pointer;
+  }
+  button.primaire { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--trait); }
+  th { color: var(--doux); font-weight: 600; font-size: 12px; text-transform: uppercase; }
+  tr.cliquable { cursor: pointer; }
+  tr.cliquable:hover { background: #f0f4f8; }
+  .pastille {
+    display: inline-block; padding: 1px 8px; border-radius: 10px;
+    font-size: 12px; border: 1px solid var(--trait);
+  }
+  .ok { color: var(--ok); border-color: var(--ok); }
+  .alerte { color: var(--alerte); border-color: var(--alerte); }
+  .erreur { color: var(--erreur); border-color: var(--erreur); }
+  .barre { height: 6px; background: #e6e6e2; border-radius: 3px; overflow: hidden; }
+  .barre > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  pre {
+    background: #fbfbfa; border: 1px solid var(--trait); border-radius: 4px;
+    padding: 12px; overflow-x: auto; white-space: pre-wrap;
+    font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+    max-height: 340px; overflow-y: auto;
+  }
+  .colonnes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 800px) { .colonnes { grid-template-columns: 1fr; } }
+  .discret { color: var(--doux); font-size: 13px; }
+  .vide { color: var(--doux); font-style: italic; padding: 10px 0; }
+  label { font-size: 13px; color: var(--doux); }
+  .rangee { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .avertissement {
+    background: #fdf6e8; border: 1px solid #e8d5a8; border-radius: 4px;
+    padding: 10px 12px; font-size: 13px; margin-bottom: 14px;
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Benin Legal Data Pipeline</h1>
+  <span class="meta">v{{VERSION}} · juridiction : {{JURIDICTION}} · traitement 100 % local</span>
+</header>
+
+<main>
+  <div class="avertissement">
+    Cette interface ne prétend pas que l'extraction est exacte. Chaque document
+    doit être vérifié : comparez la page d'origine, le texte nettoyé et l'article
+    structuré avant de valider.
+  </div>
+
+  <!-- §22.1-3 : upload, lancement, progression -->
+  <section>
+    <h2>1 · Déposer un document</h2>
+    <div class="rangee">
+      <input type="file" id="fichier" accept="application/pdf">
+      <button class="primaire" id="envoyer">Traiter</button>
+      <span class="discret" id="message-upload"></span>
+    </div>
+    <div id="taches" style="margin-top:14px"></div>
+  </section>
+
+  <!-- §22.4-6 : aperçu texte, articles, erreurs -->
+  <section>
+    <h2>2 · Corpus</h2>
+    <div id="documents"><p class="vide">Chargement…</p></div>
+  </section>
+
+  <section id="detail" hidden>
+    <h2>3 · Vérification</h2>
+    <div id="entete-document"></div>
+    <div id="anomalies"></div>
+
+    <h3 style="font-size:14px;margin:18px 0 8px">Comparaison</h3>
+    <div class="rangee" style="margin-bottom:8px">
+      <label for="choix-article">Article :</label>
+      <select id="choix-article"></select>
+    </div>
+    <div class="colonnes">
+      <div>
+        <div class="discret">① Page d'origine (texte brut extrait)</div>
+        <pre id="page-brute"></pre>
+      </div>
+      <div>
+        <div class="discret">② Page après nettoyage</div>
+        <pre id="page-nette"></pre>
+      </div>
+    </div>
+    <div class="discret" style="margin-top:12px">③ Article structuré</div>
+    <pre id="texte-article"></pre>
+
+    <!-- §22.7 : validation manuelle -->
+    <h3 style="font-size:14px;margin:18px 0 8px">Décision</h3>
+    <div class="rangee">
+      <button data-decision="valide">Validé</button>
+      <button data-decision="a_verifier">À vérifier</button>
+      <button data-decision="rejete">Rejeté</button>
+      <input type="text" id="note" placeholder="commentaire (facultatif)" style="flex:1;min-width:180px;padding:6px">
+      <span class="discret" id="message-validation"></span>
+    </div>
+  </section>
+
+  <!-- §22.8 : téléchargement -->
+  <section>
+    <h2>4 · Exports</h2>
+    <div id="exports"><p class="vide">Chargement…</p></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let documentCourant = null;
+let detailCourant = null;
+
+async function api(url, options) {
+  const reponse = await fetch(url, options);
+  if (!reponse.ok) {
+    const corps = await reponse.json().catch(() => ({}));
+    throw new Error(corps.detail || `Erreur ${reponse.status}`);
+  }
+  return reponse.json();
+}
+
+// --- §22.1-3 : dépôt et progression ---------------------------------------
+
+$("envoyer").addEventListener("click", async () => {
+  const fichier = $("fichier").files[0];
+  if (!fichier) { $("message-upload").textContent = "Choisissez un PDF."; return; }
+  const donnees = new FormData();
+  donnees.append("file", fichier);
+  $("envoyer").disabled = true;
+  $("message-upload").textContent = "Envoi…";
+  try {
+    const tache = await api("/api/upload", { method: "POST", body: donnees });
+    $("message-upload").textContent = `Traitement lancé (${tache.job_id}).`;
+    suivre(tache.job_id);
+  } catch (erreur) {
+    $("message-upload").textContent = erreur.message;
+  } finally {
+    $("envoyer").disabled = false;
+  }
+});
+
+function suivre(jobId) {
+  const timer = setInterval(async () => {
+    try {
+      const tache = await api(`/api/jobs/${jobId}`);
+      afficherTaches();
+      if (tache.status === "termine" || tache.status === "echoue") {
+        clearInterval(timer);
+        chargerDocuments();
+        chargerExports();
+      }
+    } catch { clearInterval(timer); }
+  }, 800);
+}
+
+async function afficherTaches() {
+  const { jobs } = await api("/api/jobs");
+  if (!jobs.length) { $("taches").innerHTML = ""; return; }
+  $("taches").innerHTML = jobs.map((t) => {
+    const pct = Math.round((t.progress || 0) * 100);
+    const classe = t.status === "echoue" ? "erreur" : t.status === "termine" ? "ok" : "";
+    const erreurs = t.errors.length
+      ? `<div class="discret" style="margin-top:4px">${t.errors.map(escape).join("<br>")}</div>` : "";
+    const bilan = t.summary.total
+      ? `<span class="discret"> — ${t.summary.succeeded} réussi(s),
+         ${t.summary.review_required} à vérifier, ${t.summary.failed} en échec</span>` : "";
+    return `<div style="margin-bottom:10px">
+      <div class="rangee">
+        <span class="pastille ${classe}">${t.status}</span>
+        <strong>${escape(t.filename)}</strong>
+        <span class="discret">${escape(t.stage)}</span>${bilan}
+      </div>
+      <div class="barre" style="margin-top:6px"><div style="width:${pct}%"></div></div>
+      ${erreurs}
+    </div>`;
+  }).join("");
+}
+
+// --- §22.4-6 : corpus, texte, articles, erreurs ---------------------------
+
+async function chargerDocuments() {
+  const { documents } = await api("/api/documents");
+  if (!documents.length) {
+    $("documents").innerHTML = `<p class="vide">Aucun document. Déposez un PDF ci-dessus,
+      ou lancez <code>python -m bldp pipeline ./input</code>.</p>`;
+    return;
+  }
+  $("documents").innerHTML = `<table>
+    <thead><tr><th>Identifiant</th><th>Titre</th><th>Type</th><th>Numéro</th>
+    <th>Date</th><th>Pages</th><th>Validation</th></tr></thead>
+    <tbody>${documents.map((d) => `
+      <tr class="cliquable" data-id="${escape(d.document_id)}">
+        <td>${escape(d.document_id)}</td>
+        <td>${escape(d.title || "—")}</td>
+        <td>${escape(d.type || "—")}</td>
+        <td>${escape(d.number || "—")}</td>
+        <td>${escape(d.date || "—")}</td>
+        <td>${d.pages || 0}</td>
+        <td><span class="pastille ${d.validation === "valide" ? "ok" : ""}">${escape(d.validation)}</span></td>
+      </tr>`).join("")}</tbody></table>`;
+  document.querySelectorAll("#documents tr.cliquable").forEach((ligne) =>
+    ligne.addEventListener("click", () => ouvrirDocument(ligne.dataset.id)));
+}
+
+async function ouvrirDocument(documentId) {
+  documentCourant = documentId;
+  detailCourant = await api(`/api/documents/${documentId}`);
+  const d = detailCourant.document;
+  const q = detailCourant.quality;
+
+  $("detail").hidden = false;
+  $("entete-document").innerHTML = `
+    <div><strong>${escape(d.title || documentId)}</strong></div>
+    <div class="discret">${escape(d.source_path || "")}</div>
+    <div class="discret">${escape(d.type || "?")} ${escape(d.number || "")} —
+      ${detailCourant.pages.length} page(s), ${detailCourant.articles.length} article(s)
+      ${q ? `— qualité ${q.score.toFixed(2)} (${escape(q.status)})` : ""}</div>`;
+
+  $("anomalies").innerHTML = detailCourant.issues.length
+    ? `<div style="margin-top:10px">${detailCourant.issues.map((i) =>
+        `<div class="pastille ${i.severity === "error" ? "erreur" : i.severity === "warning" ? "alerte" : ""}"
+         style="margin:2px 4px 2px 0">${escape(i.message)}</div>`).join("")}</div>`
+    : `<div class="discret" style="margin-top:8px">Aucune anomalie détectée — ce qui ne
+       garantit pas l'exactitude : vérifiez tout de même la comparaison ci-dessous.</div>`;
+
+  const select = $("choix-article");
+  select.innerHTML = detailCourant.articles.map((a, i) =>
+    `<option value="${i}">Article ${escape(a.article_number)} (p. ${a.page_start})</option>`).join("");
+  select.onchange = () => afficherArticle(Number(select.value));
+  if (detailCourant.articles.length) afficherArticle(0);
+  else { $("page-brute").textContent = $("page-nette").textContent = $("texte-article").textContent = "—"; }
+
+  $("detail").scrollIntoView({ behavior: "smooth" });
+}
+
+function afficherArticle(index) {
+  const article = detailCourant.articles[index];
+  if (!article) return;
+  const page = detailCourant.pages.find((p) => p.page === article.page_start);
+  $("page-brute").textContent = page ? (page.raw_text || "—") : "—";
+  $("page-nette").textContent = page ? (page.text || "—") : "—";
+  const contexte = [article.title, article.chapter, article.section].filter(Boolean).join(" > ");
+  $("texte-article").textContent =
+    (contexte ? contexte + "\n\n" : "") + `Article ${article.article_number}\n\n` + article.text;
+}
+
+// --- §22.7 : validation manuelle ------------------------------------------
+
+document.querySelectorAll("[data-decision]").forEach((bouton) =>
+  bouton.addEventListener("click", async () => {
+    if (!documentCourant) return;
+    const donnees = new FormData();
+    donnees.append("status", bouton.dataset.decision);
+    donnees.append("note", $("note").value);
+    try {
+      await api(`/api/documents/${documentCourant}/validation`, { method: "POST", body: donnees });
+      $("message-validation").textContent = `Enregistré : ${bouton.dataset.decision}`;
+      chargerDocuments();
+    } catch (erreur) {
+      $("message-validation").textContent = erreur.message;
+    }
+  }));
+
+// --- §22.8 : téléchargement -----------------------------------------------
+
+async function chargerExports() {
+  const { files } = await api("/api/exports");
+  $("exports").innerHTML = files.length
+    ? `<table><thead><tr><th>Fichier</th><th>Taille</th><th></th></tr></thead>
+       <tbody>${files.map((f) => `<tr>
+         <td>${escape(f.name)}</td>
+         <td class="discret">${(f.size_bytes / 1024).toFixed(1)} Kio</td>
+         <td><a href="/api/exports/${encodeURIComponent(f.name)}">Télécharger</a></td>
+       </tr>`).join("")}</tbody></table>`
+    : `<p class="vide">Aucun export. Lancez un traitement pour en produire.</p>`;
+}
+
+function escape(valeur) {
+  return String(valeur ?? "").replace(/[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+
+chargerDocuments();
+chargerExports();
+afficherTaches();
+</script>
+</body>
+</html>
