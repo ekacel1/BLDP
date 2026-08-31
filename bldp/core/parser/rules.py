@@ -50,11 +50,31 @@ _LATIN_SUFFIX = (
 
 #: Numéro de subdivision : arabe (avec ordinal, composé et suffixe), romain, ou
 #: littéral. L'ordre des alternatives compte : la forme la plus longue d'abord.
+#: Désignations qui tiennent lieu de numéro dans les codes : « LIVRE
+#: PRÉLIMINAIRE », « TITRE UNIQUE ». Sans elles, ces subdivisions — pourtant
+#: bien réelles — n'étaient pas détectées, faute de chiffre.
+WORD_DESIGNATION = r"unique|pr[ée]liminaire|pr[ée]alable|introductif|introductive"
+
 NUMBER = (
     r"(?P<number>"
     rf"\d{{1,4}}(?:\s*[-–]\s*\d{{1,4}})?{_ORDINAL_MARK}{_LATIN_SUFFIX}"
     r"|[IVXLCDM]{1,7}"                  # romain
     rf"|(?:{WORD_ORDINAL})"
+    r")"
+)
+
+#: Numéro d'une **subdivision**, désignations littérales comprises.
+#:
+#: Distinct de :data:`NUMBER`, qui sert aux articles : « Article unique » est
+#: une forme propre à certaines juridictions et reste déclarée dans leur
+#: module (§29), tandis que « LIVRE PRÉLIMINAIRE » et « TITRE UNIQUE » sont
+#: des désignations standard de la rédaction législative française.
+SUBDIVISION_NUMBER = (
+    r"(?P<number>"
+    rf"\d{{1,4}}(?:\s*[-–]\s*\d{{1,4}})?{_ORDINAL_MARK}{_LATIN_SUFFIX}"
+    r"|[IVXLCDM]{1,7}"
+    rf"|(?:{WORD_ORDINAL})"
+    rf"|(?:{WORD_DESIGNATION})"
     r")"
 )
 
@@ -76,7 +96,11 @@ def heading_pattern(keyword: str, number_required: bool = True) -> str:
         keyword: alternative de mots-clés, ex. ``"chapitre"`` ou ``"titre|tit\\."``.
         number_required: si faux, le mot-clé seul suffit (« ANNEXE »).
     """
-    number_part = rf"\s+{NUMBER}" if number_required else rf"(?:\s+{NUMBER})?"
+    number_part = (
+        rf"\s+{SUBDIVISION_NUMBER}"
+        if number_required
+        else rf"(?:\s+{SUBDIVISION_NUMBER})?"
+    )
     return rf"^\s*(?:{keyword}){number_part}{SEPARATOR}{HEADING}$"
 
 

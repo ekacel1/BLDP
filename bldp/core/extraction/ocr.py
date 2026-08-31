@@ -276,9 +276,34 @@ def _tesseract_text(image_path: Path, language: str, timeout: int) -> str:
         raise OcrError(f"Exécution de tesseract impossible : {exc}") from exc
 
     if completed.returncode != 0:
-        detail = (completed.stderr or "").strip().splitlines()
-        raise OcrError(f"tesseract a échoué : {detail[-1] if detail else 'erreur inconnue'}")
+        raise OcrError(f"tesseract a échoué : {_tesseract_failure(completed)}")
     return completed.stdout or ""
+
+
+def _tesseract_failure(completed: Any) -> str:
+    """Explique un échec de Tesseract de façon exploitable.
+
+    « erreur inconnue » n'aide personne. Tesseract écrit parfois sur la sortie
+    standard plutôt que sur l'erreur, et se tait complètement lorsqu'il tombe
+    à court de mémoire — situation qu'on rencontre en traitant plusieurs gros
+    documents de front. Le code de retour devient alors la seule information
+    disponible, et il vaut mieux le dire que prétendre ne rien savoir.
+    """
+    for flux in (completed.stderr, completed.stdout):
+        lignes = [l.strip() for l in (flux or "").splitlines() if l.strip()]
+        if lignes:
+            return lignes[-1]
+
+    code = completed.returncode
+    if code in (-9, 137, 3221225725):  # tué par le système, ou pile épuisée
+        return (
+            f"arrêté par le système (code {code}) — mémoire probablement "
+            "insuffisante. Réduisez --workers ou ocr.dpi."
+        )
+    return (
+        f"code de retour {code}, sans message. Vérifiez TESSDATA_PREFIX et "
+        "relancez ce document seul (python -m bldp parse <fichier>)."
+    )
 
 
 def _tesseract_confidence(image_path: Path, language: str, timeout: int) -> Optional[float]:

@@ -73,6 +73,8 @@ class PipelineResult:
     embeddings_count: int = 0
     #: Documents déjà traités lors d'une exécution antérieure et non retraités.
     skipped_existing: list[str] = field(default_factory=list)
+    #: Tickets de suivi ouverts ou mis à jour par l'exécution.
+    tickets: list = field(default_factory=list)
     #: PDF OCRisés supprimés par la politique de rétention, et octets libérés.
     purged_ocr_pdfs: int = 0
     purged_bytes: int = 0
@@ -357,6 +359,9 @@ def run_pipeline(
     )
     if should_resume:
         completed = load_completed_hashes(config)
+        # Un document dont un humain a déjà réglé le sort est écarté lui aussi :
+        # le rejouer remplacerait sa décision par un verdict automatique.
+        completed.update(_settled_by_tracking(config))
         sources, result.skipped_existing = _partition_sources(sources, completed)
         if result.skipped_existing:
             logger.info(
@@ -462,6 +467,12 @@ def run_pipeline(
         # tels quels, et permettent d'indexer plus tard sans tout retraiter.
         result.chunks = chunk_documents(documents, config)
 
+    # -- Journal de suivi ----------------------------------------------------
+    # Consigné **après** le contrôle qualité : l'étape proposée à chaque
+    # ticket dépend de ce que la qualité a constaté.
+    if config.get("tracking.enabled", True):
+        result.tickets = _record_tracking(documents, config)
+
     # -- Rétention des PDF OCRisés -------------------------------------------
     # Appliquée **après** le contrôle qualité : le mode « review » conserve le
     # PDF précisément pour les documents qu'un humain devra examiner.
@@ -527,6 +538,45 @@ def run_pipeline(
         report.failed,
     )
     return result
+
+
+def _record_tracking(documents: Sequence[Document], config: Config) -> list:
+    """Consigne le lot dans le registre de suivi.
+
+    Le suivi ne doit jamais faire échouer un traitement : s'il est
+    indisponible, on le signale et le corpus reste produit (§26).
+    """
+    try:
+        from bldp.core.tracking import TrackingRegistry
+
+        with TrackingRegistry(config.path("database")) as registry:
+            tickets = registry.record_batch(documents)
+        logger.info("Suivi : %d ticket(s) mis à jour.", len(tickets))
+        return tickets
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Registre de suivi indisponible : %s", exc)
+        return []
+
+
+def _settled_by_tracking(config: Config) -> dict[str, str]:
+    """Empreintes dont un humain a déjà réglé le sort.
+
+    Retraiter un document validé ou rejeté écraserait un travail humain par
+    un résultat automatique. La reprise les écarte donc au même titre que les
+    documents déjà traités avec succès.
+    """
+    if not config.get("tracking.enabled", True):
+        return {}
+    try:
+        from bldp.core.tracking import TrackingRegistry
+
+        database = config.path("database")
+        if not database.exists():
+            return {}
+        with TrackingRegistry(database, create=False) as registry:
+            return registry.settled_hashes()
+    except Exception:  # noqa: BLE001 — le suivi ne bloque jamais le pipeline
+        return {}
 
 
 def _resolve_workers(config: Config, workers: int | None, count: int) -> int:

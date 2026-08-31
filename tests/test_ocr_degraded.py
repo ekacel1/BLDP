@@ -39,6 +39,21 @@ def parse(texte: str, config, jurisdiction: str = "benin"):
     return parse_document(pages, "doc", config, ruleset=ruleset)
 
 
+def clean_and_parse(texte: str, config, jurisdiction: str = "benin"):
+    """Nettoyage **puis** parsing, comme le fait le pipeline.
+
+    Les corrections OCR vivent dans le module de nettoyage : un test qui
+    parse directement le texte brut ne les exerce pas, et ne dirait donc rien
+    de ce que produit réellement le pipeline.
+    """
+    from bldp.core.cleaning.normalizer import clean_pages
+
+    pages = [Page(document_id="doc", page=1, text=texte, source_file="doc.pdf")]
+    cleaned, _ = clean_pages(pages, config, "doc")
+    ruleset = get_jurisdiction(jurisdiction).ruleset if jurisdiction else generic_ruleset()
+    return parse_document(cleaned, "doc", config, ruleset=ruleset)
+
+
 # ---------------------------------------------------------------------------
 # Le symbole « ° » mal lu
 # ---------------------------------------------------------------------------
@@ -401,3 +416,69 @@ class TestImplicitAnnexScope:
         )
         anomalies = check_numbering(result.articles)
         assert any("manquant" in a for a in anomalies)
+
+
+# ---------------------------------------------------------------------------
+# Codes : hiérarchie profonde et couche texte issue d'un OCR antérieur
+# ---------------------------------------------------------------------------
+
+
+CODE_ELECTORAL = (
+    "LOI N' 2019 - 43 DU 15 NOVEMBRE 2019\n"
+    "porlont code electorol.\n"
+    "LIVRE PRELIMINAIRE\n"
+    "TITRE UNIQUE\n"
+    "DES DEFINITIONS\n"
+    "Article leI: Au sens du present code, on entend por centre de vote.\n"
+    "TIVRE PREMIER\n"
+    "DES REGLES COMMUNES AUX ELECTIONS GENERALES\n"
+    "TITRE PREMIER\n"
+    "DES GENERALITES\n"
+    "Arlicle 2 : Les dispositions du present livre concernent les regles communes.\n"
+    "Arlicle 3 : L'election est le choix libre por le peuple des citoyens.\n"
+    "CHAPITREI\n"
+    "DES GENERALITES\n"
+    "Arlicle l3 : Les elections sont gerees par une structure administrative.\n"
+    "SECfIONl\n"
+    "ATTRIBUTIONS ET COMPOSITION\n"
+    "Artlcle 20 : Le Conseil electoral est compose de cinq membres.\n"
+)
+
+
+class TestCodeWithDeepHierarchy:
+    """Un **code** sollicite le parser plus qu'aucun autre texte.
+
+    Sa hiérarchie va de LIVRE à l'article en passant par TITRE, CHAPITRE,
+    SECTION et PARAGRAPHE, et sa couche texte provient souvent d'un OCR
+    antérieur au pipeline.
+    """
+
+    def test_the_livre_level_is_detected(self, config):
+        """« TIVRE » (L lu T) faisait disparaître tout le niveau LIVRE."""
+        from bldp.models import StructureLevel
+
+        result = clean_and_parse(CODE_ELECTORAL, config)
+        livres = [n for n in result.structure if n.level is StructureLevel.LIVRE]
+        assert len(livres) == 2
+
+    def test_glued_keywords_are_separated(self, config):
+        """« CHAPITREI », « SECfIONl » : l'OCR perd l'espace avant le numéro."""
+        from bldp.models import StructureLevel
+
+        result = clean_and_parse(CODE_ELECTORAL, config)
+        niveaux = {n.level for n in result.structure}
+        assert StructureLevel.CHAPITRE in niveaux
+        assert StructureLevel.SECTION in niveaux
+
+    def test_every_article_variant_is_recovered(self, config):
+        """« Arlicle », « Artlcle », « Article leI » comptent tous."""
+        result = clean_and_parse(CODE_ELECTORAL, config)
+        numeros = [a.article_number for a in result.articles]
+        assert numeros == ["1er", "2", "3", "13", "20"]
+
+    def test_articles_carry_the_full_hierarchy(self, config):
+        result = clean_and_parse(CODE_ELECTORAL, config)
+        dernier = result.articles[-1]
+        assert dernier.livre and dernier.title
+        assert dernier.chapter and dernier.section
+        assert len(dernier.hierarchy_path) >= 4

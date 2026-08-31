@@ -334,3 +334,40 @@ class TestReadinessIsHonest:
         monkeypatch.setattr(ocr_module.shutil, "which", lambda name: f"/usr/bin/{name}")
         monkeypatch.setattr(ocr_module, "tesseract_languages", lambda: ["eng", "fra", "osd"])
         assert check_ocr_ready(config) == (True, [])
+
+
+class TestFailureIsDiagnosable:
+    """« erreur inconnue » n'aide personne à réparer quoi que ce soit.
+
+    Sur un lot de 46 documents traités à quatre fils, Tesseract est sorti en
+    erreur sans rien écrire : le corpus a bien été produit (§26), mais le
+    message ne permettait pas de comprendre pourquoi.
+    """
+
+    def test_stderr_is_reported_when_present(self):
+        from bldp.core.extraction.ocr import _tesseract_failure
+
+        completed = FakeCompleted(1, stderr="Error opening data file fra.traineddata")
+        assert "fra.traineddata" in _tesseract_failure(completed)
+
+    def test_stdout_is_used_when_stderr_is_silent(self):
+        """Tesseract écrit parfois son erreur sur la sortie standard."""
+        from bldp.core.extraction.ocr import _tesseract_failure
+
+        completed = FakeCompleted(1, stdout="Image too large")
+        assert "Image too large" in _tesseract_failure(completed)
+
+    @pytest.mark.parametrize("code", [-9, 137])
+    def test_a_process_killed_by_the_system_is_named_as_such(self, code):
+        """Le cas rencontré : aucun message, seulement un code de retour."""
+        from bldp.core.extraction.ocr import _tesseract_failure
+
+        message = _tesseract_failure(FakeCompleted(code))
+        assert "mémoire" in message
+        assert "--workers" in message, "le message doit dire quoi faire"
+
+    def test_a_silent_failure_still_says_what_to_try(self):
+        from bldp.core.extraction.ocr import _tesseract_failure
+
+        message = _tesseract_failure(FakeCompleted(1))
+        assert "TESSDATA_PREFIX" in message and "code de retour 1" in message

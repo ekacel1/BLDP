@@ -236,6 +236,47 @@ Trois points à connaître :
 Ordre de grandeur mesuré : **1,8 s/page** en séquentiel. Comptez ~70 Go de PDF
 OCRisés pour 10 000 documents si vous les conservez tous — d'où `--keep-ocr`.
 
+### Suivre les documents : tickets, étapes, journal
+
+Le pipeline sait traiter un document ; il ne sait pas dire **où on en est**
+avec lui. Le registre de suivi tient ce rôle.
+
+```bash
+python -m bldp suivi etat                     # tableau de bord par étape
+python -m bldp suivi liste --etape a_verifier # la file de relecture
+python -m bldp suivi assigner loi_2025_09 virgile
+python -m bldp suivi avancer loi_2025_09 valide --par virgile --motif "conforme au JO"
+python -m bldp suivi montrer loi_2025_09      # la fiche et son journal complet
+```
+
+Chaque document reçoit un **ticket** (`BLDP-000042`) et un **badge** :
+
+| badge | étape | ce qu'il reste à faire |
+|---|---|---|
+| `[ ]` | importé | traiter |
+| `[*]` | traité | rien, sauf contrôle |
+| `[!]` | à vérifier | relire — la qualité a signalé quelque chose |
+| `[?]` | en revue | quelqu'un s'en occupe |
+| `[V]` | validé | archiver |
+| `[X]` | rejeté | — |
+
+Trois propriétés structurent le registre :
+
+- **Un contenu, un ticket.** Le ticket est attaché à l'empreinte du fichier,
+  pas à son nom. Le même texte reçu deux fois — sous deux noms, dans deux
+  dossiers, à six mois d'écart — retrouve son ticket, son historique et la
+  décision humaine déjà prise. C'est ce qui évite de refaire un travail déjà
+  fait, y compris le travail *humain*, que le pipeline ne peut pas deviner.
+- **Un journal en écriture seule.** Chaque changement est consigné avec sa
+  date, son auteur et son motif. On peut toujours répondre à « qui a validé ce
+  document, quand, et pourquoi ? ».
+- **Rien ne s'auto-valide.** `valide` et `rejete` exigent `--par <personne>` :
+  le pipeline peut proposer `à vérifier`, jamais conclure (§16).
+
+Avec `--resume`, un document déjà validé ou rejeté est écarté au même titre
+qu'un document déjà traité : le rejouer remplacerait une décision humaine par
+un verdict automatique.
+
 ### Interface web
 
 ```bash

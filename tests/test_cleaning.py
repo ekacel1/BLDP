@@ -243,11 +243,41 @@ class TestDocumentCleaning:
             assert all("page_videe_par_le_nettoyage" in p.warnings for p in emptied)
             assert any("vidée" in w for w in report.warnings)
 
-    def test_ocr_fixes_only_on_ocr_pages(self, config):
-        native = make_pages(["Artic1e 45 : disposition."], ExtractionMethod.NATIVE)
-        ocr = make_pages(["Artic1e 45 : disposition."], ExtractionMethod.OCR)
-        assert "Artic1e" in clean_pages(native, config)[0][0].text
-        assert "Article 45" in clean_pages(ocr, config)[0][0].text
+    def test_ocr_fixes_apply_to_damaged_native_text(self, config):
+        """Un PDF « natif » peut porter la couche texte d'un OCR antérieur.
+
+        Le pipeline le classe alors natif alors que son texte présente toutes
+        les confusions d'un scan. Sur deux codes béninois réels, « Arlicle »
+        apparaissait 75 fois dans un document réputé natif : conditionner les
+        corrections à *notre* OCR faisait perdre autant d'articles.
+
+        Ce qui compte n'est pas qui a produit l'OCR, mais si le texte en porte
+        les traces.
+        """
+        for methode in (ExtractionMethod.NATIVE, ExtractionMethod.OCR):
+            pages = make_pages(["Artic1e 45 : disposition."], methode)
+            cleaned, report = clean_pages(pages, config)
+            assert "Article 45" in cleaned[0].text
+            assert report.ocr_corrections >= 1
+
+    def test_the_repair_of_a_native_page_is_recorded(self, config):
+        """Réparer un texte réputé natif est un fait notable : on le compte."""
+        pages = make_pages(["Arlicle 4 : disposition."], ExtractionMethod.NATIVE)
+        _, report = clean_pages(pages, config)
+        assert report.native_text_repaired >= 1
+
+    def test_clean_native_text_is_left_untouched(self, config):
+        """La garantie qui compte : un texte sain ne bouge pas."""
+        propre = (
+            "TITRE PREMIER\nCHAPITRE II\n"
+            "Article 45 : Les artisans et les artistes exercent leur art.\n"
+            "L'articulation des articles du code reste inchangee.\n"
+        )
+        pages = make_pages([propre], ExtractionMethod.NATIVE)
+        cleaned, report = clean_pages(pages, config)
+        assert report.ocr_corrections == 0
+        for ligne in propre.splitlines():
+            assert ligne.strip() in cleaned[0].text
 
     def test_empty_input(self, config):
         cleaned, report = clean_pages([], config)

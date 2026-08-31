@@ -349,6 +349,56 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--reload", action="store_true", help="rechargement automatique")
     p_serve.set_defaults(func=cmd_serve)
 
+    # -- suivi --------------------------------------------------------------
+    p_suivi = subparsers.add_parser(
+        "suivi",
+        parents=[common],
+        help="suivre les documents : tickets, étapes, journal",
+        description=(
+            "Registre de suivi du corpus. Chaque document reçoit un ticket "
+            "attaché à l'empreinte de son contenu : le même texte reçu deux "
+            "fois retrouve son ticket, avec son historique et la décision "
+            "humaine déjà prise. Rien ne s'auto-valide."
+        ),
+    )
+    suivi_actions = p_suivi.add_subparsers(dest="action", metavar="ACTION")
+
+    s_liste = suivi_actions.add_parser("liste", parents=[common], help="lister les tickets")
+    s_liste.add_argument("--etape", help="filtrer sur une étape")
+    s_liste.add_argument("--assigne", help="filtrer sur une personne")
+    s_liste.add_argument("--limit", type=int, default=40, help="nombre maximal de lignes")
+
+    s_montrer = suivi_actions.add_parser(
+        "montrer", parents=[common], help="détail d'un ticket et son journal"
+    )
+    s_montrer.add_argument("reference", help="identifiant de ticket ou de document")
+
+    s_avancer = suivi_actions.add_parser(
+        "avancer", parents=[common], help="faire passer un ticket à une étape"
+    )
+    s_avancer.add_argument("reference", help="identifiant de ticket ou de document")
+    s_avancer.add_argument("etape", help="étape visée")
+    s_avancer.add_argument(
+        "--par", required=True, metavar="PERSONNE",
+        help="qui prend la décision — obligatoire, et consigné au journal",
+    )
+    s_avancer.add_argument("--motif", default="", help="justification, consignée")
+
+    s_assigner = suivi_actions.add_parser(
+        "assigner", parents=[common], help="confier un ticket à quelqu'un"
+    )
+    s_assigner.add_argument("reference", help="identifiant de ticket ou de document")
+    s_assigner.add_argument("personne", nargs="?", help="omis = libérer le ticket")
+    s_assigner.add_argument("--par", default="cli", help="qui effectue l'assignation")
+
+    s_noter = suivi_actions.add_parser("noter", parents=[common], help="ajouter une note à un ticket")
+    s_noter.add_argument("reference")
+    s_noter.add_argument("note")
+    s_noter.add_argument("--par", default="cli")
+
+    suivi_actions.add_parser("etat", parents=[common], help="tableau de bord par étape")
+    p_suivi.set_defaults(func=cmd_suivi)
+
     # -- stats --------------------------------------------------------------
     p_stats = subparsers.add_parser(
         "stats", parents=[common], help="afficher l'état du corpus enregistré"
@@ -1084,6 +1134,138 @@ def cmd_serve(args: argparse.Namespace, config: Config) -> int:
     except WebUnavailableError as exc:
         logger.error("%s", exc)
         return EXIT_ERROR
+    return EXIT_OK
+
+
+def cmd_suivi(args: argparse.Namespace, config: Config) -> int:
+    """Registre de suivi : tickets, étapes, journal."""
+    from bldp.core.tracking import STAGE_BADGES, Stage, TrackingRegistry
+    from bldp.core.tracking.registry import TrackingError, allowed_transitions
+
+    logger = get_logger()
+    action = getattr(args, "action", None) or "liste"
+    database = config.path("database")
+    if not database.exists():
+        logger.error(
+            "Aucun corpus dans %s. Lancez d'abord : python -m bldp pipeline ./input",
+            database,
+        )
+        return EXIT_ERROR
+
+    def to_stage(valeur: str) -> Stage:
+        try:
+            return Stage(valeur)
+        except ValueError as exc:
+            connues = ", ".join(s.value for s in Stage)
+            raise TrackingError(
+                f"Étape inconnue « {valeur} ». Étapes connues : {connues}"
+            ) from exc
+
+    try:
+        with TrackingRegistry(database) as registry:
+            if action == "etat":
+                return _suivi_etat(registry, STAGE_BADGES, Stage)
+            if action == "liste":
+                stage = to_stage(args.etape) if args.etape else None
+                return _suivi_liste(
+                    registry.list_tickets(stage, args.assigne, args.limit)
+                )
+
+            ticket = registry.resolve(args.reference)
+            if ticket is None:
+                logger.error(
+                    "Aucun ticket pour « %s ». Essayez : python -m bldp suivi liste",
+                    args.reference,
+                )
+                return EXIT_ERROR
+
+            if action == "montrer":
+                return _suivi_montrer(registry, ticket, allowed_transitions)
+            if action == "avancer":
+                mis = registry.advance(
+                    ticket.ticket_id, to_stage(args.etape), args.par, args.motif
+                )
+                print(f"{mis.ticket_id} : {mis.badge}   (décidé par {args.par})")
+                return EXIT_OK
+            if action == "assigner":
+                mis = registry.assign(ticket.ticket_id, args.personne, args.par)
+                print(
+                    f"{mis.ticket_id} confié à {mis.assignee}"
+                    if mis.assignee
+                    else f"{mis.ticket_id} libéré"
+                )
+                return EXIT_OK
+            if action == "noter":
+                registry.annotate(ticket.ticket_id, args.note, args.par)
+                print(f"{ticket.ticket_id} : note enregistrée.")
+                return EXIT_OK
+    except TrackingError as exc:
+        logger.error("%s", exc)
+        return EXIT_ERROR
+
+    logger.error("Action de suivi inconnue : %s", action)
+    return EXIT_ERROR
+
+
+def _suivi_etat(registry, badges, stage_enum) -> int:
+    """Tableau de bord : combien de documents à chaque étape."""
+    counts = registry.counts_by_stage()
+    if not counts:
+        print("Aucun ticket : le corpus n'a pas encore été traité.")
+        return EXIT_OK
+    print(f"{'ÉTAPE':>14}  {'BADGE':<18} TICKETS")
+    print("-" * 46)
+    for stage in stage_enum:
+        total = counts.get(stage.value, 0)
+        if not total:
+            continue
+        marker, label = badges[stage]
+        print(f"{stage.value:>14}  {marker} {label:<14} {total:>5}")
+    print("-" * 46)
+    print(f"{'total':>14}  {'':<18} {sum(counts.values()):>5}")
+    return EXIT_OK
+
+
+def _suivi_liste(tickets) -> int:
+    if not tickets:
+        print("Aucun ticket ne correspond.")
+        return EXIT_OK
+    print(f"{'TICKET':<13} {'BADGE':<19} {'SCORE':>6} {'ASSIGNÉ':<12} DOCUMENT")
+    print("-" * 80)
+    for ticket in tickets:
+        score = (
+            f"{ticket.quality_score:.2f}" if ticket.quality_score is not None else "-"
+        )
+        print(
+            f"{ticket.ticket_id:<13} {ticket.badge:<19} {score:>6} "
+            f"{(ticket.assignee or '-'):<12} {ticket.document_id}"
+        )
+    return EXIT_OK
+
+
+def _suivi_montrer(registry, ticket, allowed_transitions) -> int:
+    """Fiche complète d'un ticket, journal compris."""
+    print(f"Ticket      : {ticket.ticket_id}   {ticket.badge}")
+    print(f"Document    : {ticket.document_id}   ({ticket.filename})")
+    if ticket.title:
+        print(f"Titre       : {ticket.title[:70]}")
+    print(f"Empreinte   : {ticket.file_hash[:16]}...")
+    print(f"Assigné à   : {ticket.assignee or '-'}")
+    if ticket.quality_score is not None:
+        print(f"Qualité     : {ticket.quality_score:.2f}")
+    if ticket.notes:
+        print(f"Note        : {ticket.notes}")
+    suite = ", ".join(sorted(s.value for s in allowed_transitions(ticket.stage)))
+    print(f"Suites possibles : {suite or 'aucune'}")
+    print()
+    print("--- journal ---")
+    for event in registry.history(ticket.ticket_id):
+        passage = f"{event.from_stage} -> {event.to_stage}" if event.to_stage else ""
+        horodatage = event.at[:19].replace("T", " ")
+        print(
+            f"  {horodatage}  {event.actor:<10} {event.action:<24} "
+            f"{passage:<22} {event.detail[:38]}"
+        )
     return EXIT_OK
 
 

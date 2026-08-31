@@ -32,6 +32,13 @@ pipeline:
   # suffisent, sans sérialisation entre processus.
   workers: 1
 
+# --- Suivi des documents : tickets, étapes, journal --------------------------
+tracking:
+  # Ouvrir un ticket par document et consigner chaque étape. Le ticket est
+  # attaché à l'empreinte du contenu : le même texte reçu deux fois retrouve
+  # son ticket, avec l'historique et la décision humaine déjà prise.
+  enabled: true
+
 ingest:
   extensions: [".pdf"]          # .docx/.txt/.html prévus ultérieurement
   recursive: true

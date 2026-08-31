@@ -111,17 +111,40 @@ _PUNCT_NORMALISATION = {
 #: Confusions OCR corrigées **uniquement** dans des contextes non ambigus.
 #: Chaque règle est un couple (motif, remplacement) volontairement étroit :
 #: on préfère laisser passer une coquille que corrompre un numéro d'article.
+#:
+#: Les motifs larges portent un ``(?!Article)`` : sans lui, ils
+#: reconnaissent aussi la graphie **correcte**, et le remplacement — sans
+#: effet sur le texte — était pourtant compté comme une correction. Un
+#: document sain semblait alors avoir été réparé.
 OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # « Artic1e 45 », « ArticIe 45 » -> « Article 45 »
-    (re.compile(r"\bArtic[l1I|]e\b"), "Article"),
-    (re.compile(r"\bArtic[l1I|][e3]\b"), "Article"),
-    # Variantes relevées sur des scans réels : le « l » lu « t » ou « d », le
-    # « l » perdu. Liste **explicite** plutôt qu'un motif large : un mot-clé
-    # trop permissif transformerait du texte courant en en-tête d'article.
+    (re.compile(r"(?!Article\b)\bArtic[l1I|]e\b"), "Article"),
+    (re.compile(r"(?!Article\b)\bArtic[l1I|][e3]\b"), "Article"),
+    # « Article » sur sept lettres, chacune dans son petit jeu de confusions
+    # relevées sur des scans réels : « Arlicle » (t lu l), « Artlcle »,
+    # « Arllcle », « ArtIcle », « Articte », « Articlè ».
+    #
+    # Ce n'est pas une variante marginale : dans un seul code électoral,
+    # « Arlicle » apparaît **75 fois**. Sans cette règle, autant d'articles
+    # absents du corpus.
+    #
+    # Le motif reste étroit — sept lettres exactes, bornées par \b, casse
+    # respectée — et n'atteint aucun mot français : « Artisan », « Artifice »,
+    # « Articulation » n'ont pas cette forme. Le pluriel « Articles » lui
+    # échappe, ce qui convient : ce n'est jamais un en-tête.
+    (re.compile(r"(?!Article\b)\bA[rn][tl][il1I][cd][lt1I][eè3]\b"), "Article"),
+    (re.compile(r"(?!ARTICLE\b)\bA[RN][TL][IL1][CD][LT1][EÈ3]\b"), "ARTICLE"),
+    # Formes de six lettres, où une lettre a fusionné avec sa voisine.
     (re.compile(r"\bArti(?:cte|de|cie|clc|cle\.|ele)\b"), "Article"),
+    (re.compile(r"(?!Article\b)\bAr[tU][Ui]?cle\b"), "Article"),
+    (re.compile(r"\bAdi[cd]le\b"), "Article"),
     (re.compile(r"\bARTI(?:CTE|DE|CIE|CLC|ELE)\b"), "ARTICLE"),
     # « ARTICI E » -> « ARTICLE »
-    (re.compile(r"\bARTIC[L1I|]\s?E\b"), "ARTICLE"),
+    (re.compile(r"(?!ARTICLE\b)\bARTIC[L1I|]\s?E\b"), "ARTICLE"),
+    # « Article l2 », « Article I4 » : le 1 initial du numéro lu l ou I. Le
+    # contexte « Article » rend la substitution sûre.
+    (re.compile(r"(?<=\bArticle )[lI](?=\d)"), "1"),
+    (re.compile(r"\bArticle\s+leI\b"), "Article 1er"),
     # Zéro/O au milieu d'un nombre : « 2O26 » -> « 2026 »
     (re.compile(r"(?<=\d)[OoQ](?=\d)"), "0"),
     # Un/l/I au milieu d'un nombre : « 2l26 » -> « 2126 »
@@ -131,6 +154,27 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # Ligature mal décodée
     (re.compile(r"ﬁ"), "fi"),
     (re.compile(r"ﬂ"), "fl"),
+    # --- Mots-clés de subdivision ----------------------------------------
+    # « TIVRE » pour « LIVRE » (L lu T) : sans cette règle, le niveau LIVRE
+    # d'un code disparaissait entièrement de la hiérarchie. Aucune de ces
+    # graphies n'est un mot français.
+    (re.compile(r"\bTIVRE\b"), "LIVRE"),
+    # Pas de ``\b`` final : le numéro est justement **collé** au mot-clé
+    # (« SECfIONl »), donc il n'y a pas de frontière de mot où l'attendre.
+    # Aucune de ces graphies n'existe en français, l'ancrage initial suffit.
+    (re.compile(r"\bSEC[fF]ION"), "SECTION"),
+    (re.compile(r"\bPARAGRAPBE"), "PARAGRAPHE"),
+    (re.compile(r"\bT[IÏ]IRE"), "TITRE"),
+    # Mot-clé soudé à son numéro : « TITREll », « CHAPITREI », « SECTIONl ».
+    # L'OCR perd l'espace ; on la rétablit sans rien ajouter d'autre. Le
+    # numéro reste tel quel — s'il est illisible, le contrôle qualité le dira.
+    (
+        re.compile(
+            r"\b(TITRE|CHAPITRE|SECTION|PARAGRAPHE|LIVRE|ANNEXE|PARTIE)"
+            r"(?=[IVXLCDMl\d])"
+        ),
+        r"\1 ",
+    ),
 )
 
 
@@ -155,6 +199,9 @@ class CleaningReport:
     rejoined_article_headers: int = 0
     joined_wrapped_lines: int = 0
     ocr_corrections: int = 0
+    #: Corrections OCR appliquees a un texte pourtant classe *natif* :
+    #: signe que la couche texte du PDF vient d'un OCR anterieur.
+    native_text_repaired: int = 0
     control_chars_removed: int = 0
     protected_lines_kept: int = 0
     warnings: list[str] = field(default_factory=list)
@@ -186,6 +233,7 @@ class CleaningReport:
             "rejoined_article_headers": self.rejoined_article_headers,
             "joined_wrapped_lines": self.joined_wrapped_lines,
             "ocr_corrections": self.ocr_corrections,
+            "native_text_repaired": self.native_text_repaired,
             "control_chars_removed": self.control_chars_removed,
             "protected_lines_kept": self.protected_lines_kept,
             "warnings": self.warnings,
@@ -523,9 +571,22 @@ def clean_page_text(
         report.control_chars_removed += removed
     if section.get("normalize_unicode", True):
         text = normalize_unicode(text)
-    if is_ocr and section.get("ocr_confusion_fixes", True):
+    if section.get("ocr_confusion_fixes", True):
+        # Volontairement **sans** condition sur ``is_ocr``. Un PDF peut arriver
+        # avec une couche texte produite par l'OCR de quelqu'un d'autre : le
+        # pipeline le classe « natif », alors que son texte porte toutes les
+        # confusions d'un scan. Deux codes béninois l'ont montré — « Arlicle »
+        # y apparaît 75 fois dans un document réputé natif, et autant
+        # d'articles disparaissaient.
+        #
+        # Ce qui compte n'est pas qui a produit l'OCR, mais si le texte en
+        # porte les traces. Les règles sont assez étroites pour ne rien
+        # changer à un texte sain : sur un document propre, le compteur
+        # ``ocr_corrections`` reste simplement à zéro.
         text, corrections = apply_ocr_fixes(text)
         report.ocr_corrections += corrections
+        if corrections and not is_ocr:
+            report.native_text_repaired += corrections
     if section.get("fix_hyphenation", True):
         text, joined = fix_hyphenation(text)
         report.joined_hyphenations += joined

@@ -5,6 +5,50 @@ projet adhère au [versionnage sémantique](https://semver.org/lang/fr/).
 
 ## [Non publié]
 
+### Ajouté — registre de suivi des documents
+
+- **Tickets, étapes et journal** (`bldp suivi`). Chaque document reçoit un
+  ticket attaché à **l'empreinte de son contenu**, pas à son nom de fichier :
+  le même texte reçu deux fois retrouve son ticket, son historique et la
+  décision humaine déjà prise. C'est la garantie de ne pas refaire un travail
+  déjà fait.
+- **Journal en écriture seule** : date, auteur et motif de chaque changement.
+  La traçabilité du §33, jusque-là assurée sur le *contenu*, s'étend aux
+  *décisions*.
+- **Transitions contrôlées** : on ne valide pas un document jamais traité, et
+  `valide`/`rejete` exigent un acteur humain nommé (§16). Une décision reste
+  révocable — un juriste peut rouvrir un dossier sans toucher la base.
+- **Reprise étendue** : `--resume` écarte aussi les documents dont un humain a
+  réglé le sort, pour ne pas remplacer sa décision par un verdict automatique.
+
+### Corrigé — codes juridiques (hiérarchie profonde)
+
+Deux codes béninois — code du travail (317 articles) et code électoral (211) —
+ont exposé trois défauts.
+
+- **Les corrections OCR ne s'appliquaient qu'à notre propre OCR.** Un PDF peut
+  arriver avec une couche texte produite par l'OCR de quelqu'un d'autre : le
+  pipeline le classe « natif » alors que son texte porte toutes les confusions
+  d'un scan. Dans un code réputé natif, « Arlicle » apparaissait **75 fois**,
+  et autant d'articles disparaissaient. Ce qui compte n'est pas qui a produit
+  l'OCR, mais si le texte en porte les traces.
+- **Variantes de « Article » élargies** : `Arlicle`, `Artlcle`, `Arllcle`,
+  `ArtIcle`, `Articte`, `ArUcle`, `Adicle`. Le motif reste étroit — sept
+  lettres bornées, casse respectée — et n'atteint aucun mot français.
+- **Mots-clés de subdivision** : `TIVRE` pour `LIVRE` (le niveau LIVRE d'un
+  code disparaissait entièrement), et le mot-clé soudé à son numéro
+  (`TITREll`, `CHAPITREI`, `SECfIONl`).
+- **Désignations sans chiffre** : `LIVRE PRÉLIMINAIRE`, `TITRE UNIQUE` sont
+  des subdivisions réelles que les règles exigeant un numéro ignoraient.
+  Introduites dans `SUBDIVISION_NUMBER`, distinct de `NUMBER` afin que
+  « Article unique » reste une forme déclarée par la juridiction (§29).
+- **Le compteur de corrections comptait les remplacements sans effet** : un
+  document sain semblait avoir été réparé. Les motifs larges portent
+  désormais un `(?!Article)`.
+
+Résultat : code électoral 92 → **186 articles sur 211**, code du travail
+292 → **296 sur 317**, subdivisions 60 → **92**, niveau LIVRE de 0 à 6.
+
 ### Corrigé — analyse dirigée du corpus dégradé
 
 Sept défauts identifiés par une analyse systématique des rapports qualité,
