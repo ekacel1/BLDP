@@ -426,3 +426,64 @@ class TestTitleAfterCleaning:
         )
         titre, _, _ = detect_title(texte, DocumentType.CODE, None)
         assert "repos hebdomadaire" not in (titre or "").lower()
+
+
+class TestOcrDashesAndCitedDates:
+    """Régressions trouvées sur 20 lois béninoises réellement scannées."""
+
+    def test_em_dash_in_the_official_number(self, benin):
+        """L'OCR rend « n° 2025 - 18 » avec un cadratin (U+2014).
+
+        Un motif limité à `-` et `–` ne reconnaissait pas le numéro du document
+        et retenait celui du texte cité : la loi 2025-18 était enregistrée sous
+        le numéro 2022-09.
+        """
+        texte = (
+            "LOI n\u00b0 2025 \u2014 18 DU 25 JUILLET 2025 modifiant et completant "
+            "la loi n\u00b0 2022-09 du 27 juin 2022"
+        )
+        assert detect_number(texte, benin)[0] == "2025-18"
+
+    @pytest.mark.parametrize("tiret", ["-", "\u2010", "\u2012", "\u2013", "\u2014", "\u2212"])
+    def test_every_unicode_dash_is_accepted(self, tiret, benin):
+        assert detect_number(f"LOI n\u00b0 2025 {tiret} 18 DU 25 JUILLET 2025", benin)[0] == "2025-18"
+
+    def test_the_cited_date_does_not_win(self, benin):
+        texte = "LOI n° 2025-18 DU 25 JUILLET 2025 modifiant la loi n° 2022-09 du 27 juin 2022"
+        iso, confiance, _ = detect_date(texte, benin, "2025-18")
+        assert iso == "2025-07-25"
+        assert confiance >= 0.90
+
+    def test_an_unreadable_own_date_lowers_confidence(self, benin):
+        """« 1FF JUILLET » (OCR de « 1er ») : la date citée est retenue…
+
+        …mais à confiance basse et explicitement signalée. Une date fausse à
+        0,95 serait pire que pas de date du tout.
+        """
+        texte = (
+            "LOI n° 2025-11 DU 1FF JUILLET 2025 portant modification de la "
+            "loi n° 2024-09 du 02 septembre 2024"
+        )
+        iso, confiance, preuve = detect_date(texte, benin, "2025-11")
+        assert iso == "2024-09-02"
+        assert confiance <= 0.60
+        assert "à vérifier" in preuve
+
+    def test_national_motto_is_not_a_title(self):
+        texte = (
+            "REPUBLIQUE DU BENIN\n"
+            "Fraternite-Justice-Travail\n"
+            "LOI n° 2025-19 DU 22 JUILLET 2025 relative aux associations\n"
+        )
+        titre, _, _ = detect_title(texte, DocumentType.LOI, "2025-19")
+        assert "fraternite" not in titre.lower()
+        assert "associations" in titre.lower()
+
+    def test_relative_aux_is_recognised_as_an_object(self):
+        """« relative aux associations » est aussi courant que « relative à »."""
+        titre, confiance, _ = detect_title(
+            "LOI n° 2025-19 DU 22 JUILLET 2025 relative aux associations",
+            DocumentType.LOI,
+            "2025-19",
+        )
+        assert confiance >= 0.80

@@ -20,6 +20,7 @@ from bldp.core.cleaning.normalizer import (
     is_protected,
     join_wrapped_lines,
     normalize_unicode,
+    rejoin_split_article_headers,
     strip_control_chars,
 )
 from bldp.models import ExtractionMethod, Page
@@ -359,3 +360,70 @@ class TestLegalContentIsNeverRemoved:
         )
         cleaned = clean_page_text(text, config)
         assert set(text.split()) == set(cleaned.split())
+
+
+class TestSplitArticleHeaders:
+    """Régression trouvée sur des lois béninoises scannées.
+
+    Tesseract éclate fréquemment l'en-tête sur plusieurs lignes ::
+
+        Article
+        88
+        :
+
+    Le parser, qui raisonne ligne par ligne, ne le reconnaissait pas et
+    **l'article disparaissait du corpus sans avertissement** — 13 articles
+    perdus sur le corpus de test.
+    """
+
+    def test_header_split_over_three_lines(self):
+        texte, count = rejoin_split_article_headers(
+            "Article\n88\n:\nLa cessation des fonctions d'un roi."
+        )
+        assert count == 1
+        assert texte.splitlines()[0] == "Article 88:"
+
+    def test_number_glued_to_the_body(self):
+        texte, count = rejoin_split_article_headers(
+            "Article\n18:Tout programme comporte un film."
+        )
+        assert count == 1
+        assert texte.startswith("Article 18:Tout programme")
+
+    @pytest.mark.parametrize(
+        "texte",
+        [
+            "Article 12 : deja complet.",
+            "Article 5\nLe contrat est conclu.",
+            "Article\ndu present texte",
+            "Article\nde la loi citee est abroge.",
+        ],
+    )
+    def test_nothing_is_merged_without_a_number(self, texte):
+        """Règle volontairement étroite : jamais de fusion spéculative."""
+        assert rejoin_split_article_headers(texte) == (texte, 0)
+
+    def test_at_most_three_lines_are_absorbed(self):
+        """Un en-tête ne doit jamais avaler un paragraphe entier."""
+        texte, _ = rejoin_split_article_headers("Article\n1\n2\n3\n4\n5\n6")
+        assert len(texte.splitlines()[0]) < 20
+
+    def test_the_split_article_is_then_parsed(self, config):
+        """Vérification de bout en bout : l'article est bien extrait."""
+        from bldp.core.parser.legal_parser import parse_document
+
+        pages = make_pages(
+            [
+                "Article\n37\n:\nDisposition precedente du texte juridique.\n"
+                "Article\n38\n:\nLa cessation des fonctions d'un roi intervient."
+            ]
+        )
+        cleaned, report = clean_pages(pages, config)
+        assert report.rejoined_article_headers == 2
+        result = parse_document(cleaned, "doc", config)
+        assert [a.article_number for a in result.articles] == ["37", "38"]
+
+    def test_can_be_disabled(self, config):
+        cfg = config.with_overrides({"cleaning": {"rejoin_article_headers": False}})
+        cleaned, report = clean_pages(make_pages(["Article\n88\n:\nTexte."]), cfg)
+        assert report.rejoined_article_headers == 0

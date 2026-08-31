@@ -71,6 +71,11 @@ class PipelineResult:
     exports: dict[str, str] = field(default_factory=dict)
     index_path: Optional[str] = None
     embeddings_count: int = 0
+    #: Documents déjà traités lors d'une exécution antérieure et non retraités.
+    skipped_existing: list[str] = field(default_factory=list)
+    #: PDF OCRisés supprimés par la politique de rétention, et octets libérés.
+    purged_ocr_pdfs: int = 0
+    purged_bytes: int = 0
 
     @property
     def succeeded(self) -> list[Document]:
@@ -189,6 +194,118 @@ def process_source(
 
 
 # ---------------------------------------------------------------------------
+# Reprise incrémentale
+# ---------------------------------------------------------------------------
+
+
+def load_completed_hashes(config: Config) -> dict[str, str]:
+    """Empreintes des documents déjà traités **avec succès**.
+
+    Un document ayant échoué lors d'une exécution antérieure n'y figure pas :
+    il doit être retenté, sans quoi une panne transitoire (verrou de fichier,
+    OCR interrompu) se transformerait en perte définitive.
+    """
+    database_path = config.path("database")
+    if not database_path.exists():
+        return {}
+
+    try:
+        from bldp.core.storage.sqlite_store import LegalDatabase
+
+        with LegalDatabase(database_path, create=False) as database:
+            return {
+                row["file_hash"]: row["document_id"]
+                for row in database.connection.execute(
+                    "SELECT document_id, file_hash, errors_json FROM documents "
+                    "WHERE file_hash IS NOT NULL AND file_hash != ''"
+                )
+                if row["errors_json"] in (None, "", "[]")
+            }
+    except Exception as exc:  # base absente, verrouillée, schéma ancien
+        logger.warning(
+            "Reprise impossible (%s) : tous les documents seront retraités.", exc
+        )
+        return {}
+
+
+def _partition_sources(
+    sources: Sequence[SourceFile], completed: dict[str, str]
+) -> tuple[list[SourceFile], list[str]]:
+    """Sépare ce qui reste à traiter de ce qui l'a déjà été."""
+    to_process: list[SourceFile] = []
+    skipped: list[str] = []
+    for source in sources:
+        known = completed.get(source.file_hash) if source.file_hash else None
+        if known:
+            skipped.append(known)
+        else:
+            to_process.append(source)
+    return to_process, skipped
+
+
+# ---------------------------------------------------------------------------
+# Rétention des PDF OCRisés
+# ---------------------------------------------------------------------------
+
+
+def purge_ocr_pdfs(documents: Sequence[Document], policy: str) -> tuple[int, int]:
+    """Applique la politique de rétention des PDF OCRisés.
+
+    Args:
+        policy: ``"all"`` (tout conserver), ``"review"`` (ne garder que les
+            documents à vérifier) ou ``"none"``.
+
+    Le PDF OCRisé est ce qui permet de comparer le texte extrait à l'image
+    d'origine. Le supprimer, c'est renoncer à cette vérification — d'où le mode
+    ``review``, qui le conserve précisément là où un humain devra trancher.
+
+    Returns:
+        ``(fichiers_supprimés, octets_libérés)``.
+    """
+    if policy not in {"all", "review", "none"}:
+        logger.warning("Politique de rétention inconnue (%s) : tout est conservé.", policy)
+        return 0, 0
+    if policy == "all":
+        return 0, 0
+
+    removed = freed = 0
+    for document in documents:
+        extraction = document.extraction
+        if not extraction or not extraction.ocr_pdf_path:
+            continue
+        if policy == "review":
+            suspect = bool(document.errors) or (
+                document.quality is not None
+                and document.quality.status is not QualityStatus.OK
+            )
+            if suspect:
+                continue
+
+        path = Path(extraction.ocr_pdf_path)
+        try:
+            size = path.stat().st_size
+            path.unlink()
+        except OSError:
+            continue
+        removed += 1
+        freed += size
+        extraction.ocr_pdf_path = None
+        extraction.warnings.append(
+            "PDF OCRisé supprimé par la politique de rétention "
+            f"(ocr.keep_sidecar_for={policy})"
+        )
+
+    if removed:
+        logger.info(
+            "Rétention « %s » : %d PDF OCRisé(s) supprimé(s), %.0f Mo libérés.",
+            policy,
+            removed,
+            freed / 1e6,
+        )
+    return removed, freed
+
+
+# ---------------------------------------------------------------------------
 # Pipeline complet
 # ---------------------------------------------------------------------------
 
@@ -200,6 +317,8 @@ def run_pipeline(
     do_export: bool = True,
     do_embeddings: bool | None = None,
     progress: ProgressCallback | None = None,
+    resume: bool | None = None,
+    workers: int | None = None,
 ) -> PipelineResult:
     """Exécute le pipeline complet sur un dossier d'entrée.
 
@@ -211,6 +330,10 @@ def run_pipeline(
         do_embeddings: forcer l'activation/désactivation des embeddings ;
             ``None`` = suivre la configuration.
         progress: rappel de progression, pour l'interface web ou la CLI.
+        resume: sauter les documents déjà traités avec succès ; ``None`` =
+            suivre ``pipeline.resume``.
+        workers: nombre de documents traités de front ; ``None`` = suivre
+            ``pipeline.workers``, ``0`` = un par cœur.
 
     Returns:
         Le résultat complet : documents, fragments, rapport et exports.
@@ -227,42 +350,51 @@ def run_pipeline(
     sources = ingest(input_path, config)
     if limit:
         sources = sources[:limit]
+
+    # -- Reprise : écarter ce qui a déjà été traité avec succès -------------
+    should_resume = (
+        bool(config.get("pipeline.resume", False)) if resume is None else resume
+    )
+    if should_resume:
+        completed = load_completed_hashes(config)
+        sources, result.skipped_existing = _partition_sources(sources, completed)
+        if result.skipped_existing:
+            logger.info(
+                "Reprise : %d document(s) déjà traité(s) ignoré(s), %d à traiter.",
+                len(result.skipped_existing),
+                len(sources),
+            )
+
     report.total = len(sources)
 
     if not sources:
-        logger.warning("Aucun document à traiter dans %s", input_path)
+        if result.skipped_existing:
+            logger.info("Rien de nouveau à traiter : le corpus est à jour.")
+        else:
+            logger.warning("Aucun document à traiter dans %s", input_path)
+        # Le bilan doit rester complet même sur cette sortie anticipée, sinon
+        # une reprise intégrale semblerait n'avoir rien fait du tout.
+        report.skipped_existing = list(result.skipped_existing)
         report.finished_at = utc_now_iso()
         result.report = report
+        if do_export and result.skipped_existing:
+            # Les exports restent régénérés : ils doivent refléter le corpus
+            # complet, même quand rien n'a changé.
+            result.exports = _export_corpus(config, result.chunks)
         return result
 
-    # -- Traitement document par document -----------------------------------
-    for rank, source in enumerate(sources, start=1):
-        if progress:
-            progress(rank, len(sources), source.document_id, "traitement")
-        logger.info("[%d/%d] %s", rank, len(sources), source.document_id)
-        try:
-            document = process_source(source, config, ruleset, profile)
-        except Exception as exc:  # noqa: BLE001 — §26 : jamais d'arrêt du lot
-            logger.error(
-                "Erreur inattendue sur %s : %s", source.document_id, exc, exc_info=True
-            )
-            document = Document(
-                document_id=source.document_id,
-                source=source,
-                metadata=DocumentMetadata(document_id=source.document_id),
-                pipeline_version=__version__,
-                processed_at=utc_now_iso(),
-                errors=[f"erreur inattendue : {exc}"],
-            )
-            report.errors.append(
-                {
-                    "document_id": source.document_id,
-                    "error": str(exc),
-                    "traceback": traceback.format_exc(limit=5),
-                }
-            )
-        result.documents.append(document)
+    # -- Traitement, éventuellement parallèle --------------------------------
+    worker_count = _resolve_workers(config, workers, len(sources))
+    if worker_count > 1:
+        # Chaque ocrmypdf parallélise déjà en interne : sans ce garde-fou, N
+        # processus × M fils saturent la machine et ralentissent l'ensemble.
+        if not config.get("ocr.jobs"):
+            config = config.with_overrides({"ocr": {"jobs": 1}})
+        logger.info("Traitement de %d document(s) sur %d fil(s).", len(sources), worker_count)
 
+    result.documents = _process_sources(
+        sources, config, ruleset, profile, report, worker_count, progress
+    )
     documents = result.documents
 
     # -- Module 9 : doublons -------------------------------------------------
@@ -311,6 +443,7 @@ def run_pipeline(
             report.succeeded += 1
 
     report.skipped_duplicates = dedup_report.identical_files + dedup_report.identical_texts
+    report.skipped_existing = list(result.skipped_existing)
 
     # -- Chunking, embeddings, index -----------------------------------------
     wants_embeddings = (
@@ -329,11 +462,21 @@ def run_pipeline(
         # tels quels, et permettent d'indexer plus tard sans tout retraiter.
         result.chunks = chunk_documents(documents, config)
 
+    # -- Rétention des PDF OCRisés -------------------------------------------
+    # Appliquée **après** le contrôle qualité : le mode « review » conserve le
+    # PDF précisément pour les documents qu'un humain devra examiner.
+    policy = str(config.get("ocr.keep_sidecar_for", "all"))
+    result.purged_ocr_pdfs, result.purged_bytes = purge_ocr_pdfs(documents, policy)
+
     # -- Exports --------------------------------------------------------------
     if do_export:
         if progress:
             progress(len(sources), len(sources), "—", "export")
         result.exports = export_all(documents, config, result.chunks)
+        if result.skipped_existing:
+            # Des documents ont été sautés : les fichiers doivent refléter le
+            # corpus entier, pas seulement le lot courant.
+            result.exports.update(_export_corpus(config, result.chunks))
         # Les vecteurs sont persistés **après** l'export : les tables `chunks`
         # et `embeddings` référencent `documents`, qui n'existe en base qu'une
         # fois l'export effectué. Les écrire plus tôt violerait la contrainte
@@ -384,6 +527,123 @@ def run_pipeline(
         report.failed,
     )
     return result
+
+
+def _resolve_workers(config: Config, workers: int | None, count: int) -> int:
+    """Nombre de documents traités de front.
+
+    ``0`` signifie « un par cœur », plafonné au nombre de documents : lancer
+    plus de fils que de documents ne sert à rien.
+    """
+    import os
+
+    requested = int(config.get("pipeline.workers", 1)) if workers is None else int(workers)
+    if requested <= 0:
+        requested = os.cpu_count() or 1
+    return max(1, min(requested, count))
+
+
+def _failed_document(source: SourceFile, exc: Exception) -> Document:
+    """Document minimal conservant l'erreur — il reste dans le corpus (§26)."""
+    return Document(
+        document_id=source.document_id,
+        source=source,
+        metadata=DocumentMetadata(document_id=source.document_id),
+        pipeline_version=__version__,
+        processed_at=utc_now_iso(),
+        errors=[f"erreur inattendue : {exc}"],
+    )
+
+
+def _process_sources(
+    sources: Sequence[SourceFile],
+    config: Config,
+    ruleset: Any,
+    profile: Any,
+    report: RunReport,
+    workers: int,
+    progress: ProgressCallback | None,
+) -> list[Document]:
+    """Traite les documents, séquentiellement ou en parallèle.
+
+    Le parallélisme repose sur des **fils** et non des processus : l'essentiel
+    du temps est passé dans OCRmyPDF et Tesseract, des sous-processus qui
+    n'occupent pas l'interpréteur. Cela évite au passage de sérialiser les
+    documents entre processus.
+
+    L'ordre du résultat suit toujours celui des sources, quel que soit l'ordre
+    d'achèvement : deux exécutions du même lot produisent le même corpus.
+    """
+    import threading
+
+    total = len(sources)
+    results: list[Optional[Document]] = [None] * total
+    lock = threading.Lock()
+    done = 0
+
+    def handle(index: int, source: SourceFile) -> None:
+        nonlocal done
+        try:
+            document = process_source(source, config, ruleset, profile)
+        except Exception as exc:  # noqa: BLE001 — §26 : jamais d'arrêt du lot
+            logger.error(
+                "Erreur inattendue sur %s : %s", source.document_id, exc, exc_info=True
+            )
+            document = _failed_document(source, exc)
+            with lock:
+                report.errors.append(
+                    {
+                        "document_id": source.document_id,
+                        "error": str(exc),
+                        "traceback": traceback.format_exc(limit=5),
+                    }
+                )
+        with lock:
+            results[index] = document
+            done += 1
+            logger.info("[%d/%d] %s", done, total, source.document_id)
+            if progress:
+                progress(done, total, source.document_id, "traitement")
+
+    if workers <= 1:
+        for index, source in enumerate(sources):
+            handle(index, source)
+    else:
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(lambda item: handle(*item), enumerate(sources)))
+
+    return [document for document in results if document is not None]
+
+
+def _export_corpus(config: Config, chunks: Sequence[Chunk]) -> dict[str, str]:
+    """Régénère les exports à partir de **tout** le corpus enregistré.
+
+    Indispensable dès qu'une exécution saute des documents déjà traités :
+    exporter le seul lot courant tronquerait ``documents.jsonl`` et
+    ``articles.jsonl`` au dernier lot, effaçant silencieusement le reste du
+    corpus.
+    """
+    from bldp.core.storage.sqlite_store import LegalDatabase, load_documents
+
+    database_path = config.path("database")
+    if not database_path.exists():
+        return {}
+
+    with LegalDatabase(database_path, create=False) as database:
+        documents = load_documents(database)
+
+    # La base est déjà à jour : on ne réécrit que les fichiers.
+    file_formats = [
+        fmt for fmt in config.get("export.formats", []) if str(fmt).lower() != "sqlite"
+    ]
+    produced = export_all(
+        documents, config.with_overrides({"export": {"formats": file_formats}}), chunks
+    )
+    produced["sqlite"] = str(database_path)
+    logger.info("Exports régénérés à partir du corpus complet (%d documents).", len(documents))
+    return produced
 
 
 def _load_known_hashes(config: Config) -> tuple[dict[str, str], dict[str, str]]:
@@ -458,10 +718,19 @@ def process_only(
     config: Config,
     limit: int | None = None,
     progress: ProgressCallback | None = None,
+    resume: bool | None = None,
+    workers: int | None = None,
 ) -> PipelineResult:
     """Traite les documents et écrit ``data/processed/`` sans exporter le corpus."""
     result = run_pipeline(
-        input_path, config, limit=limit, do_export=False, do_embeddings=False, progress=progress
+        input_path,
+        config,
+        limit=limit,
+        do_export=False,
+        do_embeddings=False,
+        progress=progress,
+        resume=resume,
+        workers=workers,
     )
     destination = config.path("processed")
     destination.mkdir(parents=True, exist_ok=True)

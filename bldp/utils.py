@@ -18,7 +18,109 @@ from typing import Any, Iterable, Iterator
 _CHUNK_SIZE = 1024 * 1024
 
 _SLUG_INVALID = re.compile(r"[^a-z0-9]+")
-_ROMAN_RE = re.compile(r"^[IVXLCDM]+$", re.IGNORECASE)
+
+#: Nombre romain **canonique**, et non n'importe quelle suite de lettres
+#: romaines.
+#:
+#: L'OCR produit des séquences comme ``ICI``, ``vlII`` ou ``XVX``. Une lecture
+#: permissive leur attribuait une valeur — ``ICI`` valait 100 — ce qui créait
+#: ensuite de fausses ruptures de numérotation. Mieux vaut refuser d'interpréter
+#: et le signaler (§33) que produire un rang inventé.
+_ROMAN_RE = re.compile(
+    r"^M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$",
+    re.IGNORECASE,
+)
+
+#: Tous les tirets Unicode rencontrés en sortie d'OCR.
+#:
+#: Ce n'est pas de la coquetterie typographique. Sur des scans réels, Tesseract
+#: rend le tiret de « LOI n° 2025 — 18 » par un **cadratin** (U+2014). Un motif
+#: n'acceptant que ``-`` et ``–`` ne reconnaissait donc pas le numéro propre du
+#: document, et retenait à la place celui du texte *cité* dans l'intitulé
+#: (« modifiant la loi n° 2022-09 ») — la loi se retrouvait identifiée sous le
+#: numéro d'une autre.
+DASHES = "-‐‑‒–—―−︱︲﹘﹣－"
+
+#: Classe de caractères prête à l'emploi dans une expression régulière.
+DASH_CLASS = "[" + re.escape(DASHES) + "]"
+
+_DASH_RE = re.compile(DASH_CLASS)
+#: Tiret séparant deux nombres, éventuellement entouré d'espaces.
+_DASH_BETWEEN_DIGITS_RE = re.compile(rf"(?<=\d)\s*{DASH_CLASS}\s*(?=\d)")
+
+
+#: Caractères par lesquels l'OCR rend le symbole « ° » de « n° ».
+#:
+#: Sur des scans médiocres, Tesseract lit « N° 2019 » comme « N" 2019 »,
+#: « N' 2019 » ou « N. 2019 ». Un motif n'acceptant que ``°`` ne reconnaît
+#: alors aucun numéro officiel — et sans numéro, la date et le type se
+#: rabattent sur les **visas**, c'est-à-dire sur les textes *cités*. Une
+#: seule lettre mal lue suffisait à faire dériver toutes les métadonnées.
+DEGREE_MARKS = "°ºoO˚'\"’‘”“*•.,:;"
+
+#: Préfixe « n° » tolérant à l'OCR, à insérer dans une expression régulière.
+#: ``\b`` empêche de mordre sur le « n » de « en » ou « an ».
+NUMERO_PREFIX = r"\bn" + f"[{re.escape(DEGREE_MARKS)}]" + r"*\s*"
+
+#: Chiffres et leurs confusions OCR courantes (O/o/Q pour 0, l/I/| pour 1).
+#: N'a de sens que dans un contexte déjà identifié comme numérique.
+OCR_DIGIT = r"[0-9OoQlI|]"
+
+_OCR_DIGIT_FIXES = str.maketrans({"O": "0", "o": "0", "Q": "0", "l": "1", "I": "1", "|": "1"})
+
+#: Séparateurs de numérotation produits par l'OCR : tirets… et l'underscore,
+#: par lequel Tesseract rend parfois un tiret sur fond bruité.
+_NUMBER_SEPARATORS = DASHES + "_"
+_SEPARATOR_BETWEEN_DIGITS_RE = re.compile(
+    rf"(?<=\d)\s*[{re.escape(_NUMBER_SEPARATORS)}]\s*(?=\d)"
+)
+
+
+#: Séparateurs admis **dans un numéro déjà capturé**, point compris.
+#:
+#: Le point ne figure pas dans :data:`_NUMBER_SEPARATORS` — qui s'applique au
+#: texte entier — car il y transformerait les dates « 11.12.1990 » et les
+#: décimales. Restreint au numéro, il est sans risque.
+_CAPTURED_SEPARATORS = _NUMBER_SEPARATORS + "."
+_CAPTURED_SEPARATOR_RUN_RE = re.compile(f"[{re.escape(_CAPTURED_SEPARATORS)}]+")
+
+
+def normalize_ocr_number(value: str) -> str:
+    """Nettoie un numéro officiel capturé sur du texte OCRisé.
+
+    Ramène les lettres confondues avec des chiffres (« 2018-OO1 » → « 2018-001 »)
+    et uniformise le séparateur, y compris quand l'OCR en produit plusieurs à la
+    suite (« 2010.- 028 » → « 2010-028 »). À n'appliquer qu'à une valeur **déjà
+    reconnue comme un numéro** : hors de ce contexte, transformer un « O » en
+    zéro corromprait le texte.
+    """
+    compact = re.sub(r"\s+", "", value)
+    compact = _CAPTURED_SEPARATOR_RUN_RE.sub("-", compact)
+    # Le suffixe littéral (« /PR/SGG ») n'est pas numérique : on le préserve.
+    head, slash, tail = compact.partition("/")
+    return head.translate(_OCR_DIGIT_FIXES) + slash + tail
+
+
+def normalize_dashes(text: str) -> str:
+    """Ramène tout tiret Unicode au trait d'union ASCII."""
+    return _DASH_RE.sub("-", text)
+
+
+def normalize_number_separators(text: str) -> str:
+    """Normalise tiret **ou underscore** entre chiffres (alias moderne)."""
+    return _SEPARATOR_BETWEEN_DIGITS_RE.sub("-", text)
+
+
+def normalize_number_dashes(text: str) -> str:
+    """Normalise les tirets **entre chiffres** uniquement.
+
+    Volontairement plus étroit que :func:`normalize_dashes` : un cadratin
+    d'incise (« la loi — adoptée en 2025 — dispose ») est de la ponctuation, et
+    le remplacer altérerait le texte. Entre deux chiffres, en revanche, le
+    tiret est un séparateur de numérotation : le normaliser est sans risque et
+    rend les numéros officiels reconnaissables.
+    """
+    return _SEPARATOR_BETWEEN_DIGITS_RE.sub("-", text)
 
 _ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
 
@@ -127,14 +229,26 @@ def make_document_id(filename: str, file_hash: str, existing: Iterable[str] = ()
     return candidate
 
 
-def make_article_id(document_id: str, article_number: str, position: int) -> str:
-    """Identifiant d'article : ``<document_id>_article_<numero>``.
+def make_article_id(
+    document_id: str,
+    article_number: str,
+    position: int,
+    scope: str = "",
+) -> str:
+    """Identifiant d'article : ``<document_id>[_<portée>]_article_<numero>``.
 
-    ``position`` sert de désambiguïsateur lorsqu'un même numéro apparaît
-    plusieurs fois (annexes, codes multi-livres).
+    Args:
+        scope: subdivision englobante lorsqu'elle ouvre une **numérotation
+            propre** — typiquement une annexe. Un accord annexé recommence à
+            « Article premier » : sans portée, son identifiant entrerait en
+            collision avec celui du corps du texte, et le contrôle qualité
+            signalerait un doublon là où il n'y a que deux séries distinctes.
+
+    ``position`` sert de dernier recours lorsque le numéro est inexploitable.
     """
     number_slug = slugify(article_number, max_length=24) or str(position)
-    return f"{document_id}_article_{number_slug}"
+    prefix = f"{document_id}_{slugify(scope, max_length=24)}" if scope else document_id
+    return f"{prefix}_article_{number_slug}"
 
 
 # ---------------------------------------------------------------------------

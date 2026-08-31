@@ -182,3 +182,63 @@ class TestPdfMetadata:
 
     def test_toc_is_empty_when_absent(self, text_pdf):
         assert extract_toc(text_pdf) == []
+
+
+class TestReadingOrder:
+    """Les blocs sont remis dans l'ordre de lecture (tri par position).
+
+    Sur des PDF numérisés, l'ordre stocké ne suit pas toujours la lecture : les
+    articles ressortaient dans le désordre (« 21, 23, 24, 22 »), que le contrôle
+    qualité signalait ensuite comme autant de fausses ruptures.
+    """
+
+    def test_blocks_are_sorted_by_position(self, tmp_path):
+        """Un PDF dont les blocs sont écrits à l'envers doit sortir dans l'ordre."""
+        pymupdf = pytest.importorskip("pymupdf")
+
+        document = pymupdf.open()
+        page = document.new_page(width=595, height=842)
+        # Écrits volontairement du bas vers le haut.
+        page.insert_textbox(pymupdf.Rect(50, 500, 545, 560), "Article 3 : troisieme.")
+        page.insert_textbox(pymupdf.Rect(50, 300, 545, 360), "Article 2 : deuxieme.")
+        page.insert_textbox(pymupdf.Rect(50, 100, 545, 160), "Article 1er : premiere.")
+        chemin = tmp_path / "desordre.pdf"
+        document.save(chemin)
+        document.close()
+
+        trie = extract_document(chemin, "doc", sort_blocks=True).pages[0].text
+        assert trie.index("Article 1er") < trie.index("Article 2") < trie.index("Article 3")
+
+    def test_sorting_never_glues_words_together(self, tmp_path):
+        """Le tri natif de PyMuPDF soude les blocs (« gouvernementvu »).
+
+        C'est pourquoi le tri est fait sur les blocs, séparateur conservé : sur
+        un corpus juridique où « Vu » introduit les visas, une soudure serait
+        une corruption de contenu.
+        """
+        pymupdf = pytest.importorskip("pymupdf")
+
+        document = pymupdf.open()
+        page = document.new_page(width=595, height=842)
+        page.insert_textbox(pymupdf.Rect(50, 100, 545, 160), "composition du Gouvernement")
+        page.insert_textbox(pymupdf.Rect(50, 300, 545, 360), "Vu la loi n 90-32")
+        chemin = tmp_path / "blocs.pdf"
+        document.save(chemin)
+        document.close()
+
+        texte = extract_document(chemin, "doc", sort_blocks=True).pages[0].text
+        assert "Gouvernementvu" not in texte.replace(" ", "")
+        assert "Vu la loi" in texte
+
+    def test_sorting_can_be_disabled(self, text_pdf):
+        """Une mise en page à plusieurs colonnes peut vouloir l'ordre d'origine."""
+        brut = extract_document(text_pdf, "loi", sort_blocks=False)
+        trie = extract_document(text_pdf, "loi", sort_blocks=True)
+        assert brut.pages and trie.pages
+        # Sur un document à une colonne, les deux modes donnent le même contenu.
+        assert set(brut.full_text.split()) == set(trie.full_text.split())
+
+    def test_no_word_is_lost_by_sorting(self, headers_pdf):
+        brut = extract_document(headers_pdf, "journal", sort_blocks=False)
+        trie = extract_document(headers_pdf, "journal", sort_blocks=True)
+        assert sorted(brut.full_text.split()) == sorted(trie.full_text.split())

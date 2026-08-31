@@ -267,8 +267,70 @@ class TestRealOcr:
     """Tests de bout en bout, exécutés seulement si les binaires sont présents."""
 
     def test_scanned_pdf_yields_readable_text(self, scanned_pdf, config):
-        if not available_engines():
-            pytest.skip("aucun moteur OCR installé sur cette machine")
+        ready, problems = check_ocr_ready(config)
+        if not ready:
+            pytest.skip("OCR non opérationnel : " + " ; ".join(problems))
         result = ocr_document(scanned_pdf, "scan", config)
         assert result.total_chars > 100
         assert "Article" in result.full_text
+
+
+class TestOutputEncoding:
+    """Régression : la sortie OCR était décodée avec l'encodage local.
+
+    Tesseract et OCRmyPDF écrivent en UTF-8. Sans `encoding="utf-8"`,
+    `subprocess` décodait en cp1252 sur Windows et tout le corpus ressortait
+    en mojibake — « présente » devenait « prÃ©sente ». Sur un corpus
+    juridique français, cela corrompt chaque mot accentué.
+    """
+
+    def test_accented_output_is_read_as_utf8(self, monkeypatch, tmp_path):
+        texte = "La présente loi sera exécutée comme Loi de l'État."
+
+        def fake_run(command, **kwargs):
+            assert kwargs.get("encoding") == "utf-8", (
+                "la sortie OCR doit être décodée explicitement en UTF-8"
+            )
+            return FakeCompleted(0, stdout=texte)
+
+        monkeypatch.setattr(ocr_module.subprocess, "run", fake_run)
+        assert ocr_module._tesseract_text(tmp_path / "p.png", "fra", 30) == texte
+
+    def test_every_subprocess_call_declares_utf8(self):
+        """Aucun appel ne doit retomber sur l'encodage de la machine."""
+        import inspect
+
+        source = inspect.getsource(ocr_module)
+        assert source.count("text=True") == source.count('encoding="utf-8"')
+
+
+class TestReadinessIsHonest:
+    """`check_ocr_ready` ne doit jamais annoncer un OCR qui échouera.
+
+    Régression trouvée en usage réel : avec le paquet pip `ocrmypdf` installé
+    mais **sans** le binaire Tesseract, le diagnostic répondait « opérationnel :
+    OUI » — puis chaque document échouait. OCRmyPDF n'est qu'un pilote.
+    """
+
+    def test_ocrmypdf_without_tesseract_is_not_ready(self, config, monkeypatch):
+        monkeypatch.setattr(
+            ocr_module.shutil,
+            "which",
+            lambda name: "/usr/bin/ocrmypdf" if name == "ocrmypdf" else None,
+        )
+        ready, problems = check_ocr_ready(config)
+        assert ready is False
+        assert any("tesseract est introuvable" in p for p in problems)
+
+    def test_unlistable_languages_is_not_ready(self, config, monkeypatch):
+        """TESSDATA_PREFIX mal configuré : on le dit, on ne le devine pas."""
+        monkeypatch.setattr(ocr_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(ocr_module, "tesseract_languages", lambda: [])
+        ready, problems = check_ocr_ready(config)
+        assert ready is False
+        assert any("TESSDATA_PREFIX" in p for p in problems)
+
+    def test_ready_only_when_everything_is_in_place(self, config, monkeypatch):
+        monkeypatch.setattr(ocr_module.shutil, "which", lambda name: f"/usr/bin/{name}")
+        monkeypatch.setattr(ocr_module, "tesseract_languages", lambda: ["eng", "fra", "osd"])
+        assert check_ocr_ready(config) == (True, [])

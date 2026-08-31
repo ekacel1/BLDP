@@ -543,5 +543,7 @@ class RunReport(JsonMixin):
     review_required: int = 0
     failed: int = 0
     skipped_duplicates: int = 0
+    #: Documents déjà traités lors d'une exécution antérieure, non retraités.
+    skipped_existing: list[str] = field(default_factory=list)
     documents: list[dict] = field(default_factory=list)
     errors: list[dict] = field(default_factory=list)

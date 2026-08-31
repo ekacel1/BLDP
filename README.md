@@ -109,12 +109,48 @@ sudo apt install tesseract-ocr tesseract-ocr-fra ghostscript
 
 # macOS
 brew install tesseract tesseract-lang ghostscript
-
-# Windows : installeurs UB-Mannheim (Tesseract) et Ghostscript,
-# puis ajoutez-les au PATH.
 ```
 
-`python -m bldp doctor` indique précisément ce qui manque.
+<details>
+<summary><b>Windows — procédure détaillée (sans droits administrateur)</b></summary>
+
+```powershell
+# 1. Tesseract (winget installe uniquement l'anglais)
+winget install --id UB-Mannheim.TesseractOCR --accept-package-agreements
+
+# 2. Pack de langue française, dans un dossier utilisateur inscriptible
+$tessdata = "$env:LOCALAPPDATA\tessdata"
+New-Item -ItemType Directory -Force $tessdata | Out-Null
+Copy-Item "C:\Program Files\Tesseract-OCR\tessdata\*" $tessdata -Recurse -Force
+Invoke-WebRequest `
+  "https://github.com/tesseract-ocr/tessdata/raw/main/fra.traineddata" `
+  -OutFile "$tessdata\fra.traineddata"
+
+# 3. Ghostscript (absent de winget) — releases officielles Artifex
+#    https://github.com/ArtifexSoftware/ghostpdl-downloads/releases
+#    Installation silencieuse dans un dossier utilisateur :
+#    .\gsXXXXw64.exe /S /D=$env:LOCALAPPDATA\Ghostscript
+
+# 4. Variables d'environnement persistantes
+[Environment]::SetEnvironmentVariable("TESSDATA_PREFIX", $tessdata, "User")
+$p = [Environment]::GetEnvironmentVariable("Path", "User")
+[Environment]::SetEnvironmentVariable("Path",
+  "$p;C:\Program Files\Tesseract-OCR;$env:LOCALAPPDATA\Ghostscript\bin", "User")
+```
+
+Deux pièges rencontrés en pratique :
+
+- **`TESSDATA_PREFIX` doit contenir les sous-dossiers `configs/` et
+  `tessconfigs/`**, pas seulement les fichiers `.traineddata`. Sans eux,
+  OCRmyPDF échoue sur `TesseractConfigError`. D'où le `Copy-Item -Recurse`
+  ci-dessus.
+- Ouvrez un **nouveau terminal** après l'étape 4 : les variables persistantes
+  ne s'appliquent pas à la session en cours.
+
+</details>
+
+`python -m bldp doctor` indique précisément ce qui manque, langues installées
+comprises.
 
 ---
 
@@ -161,6 +197,44 @@ python -m bldp validate --document loi_2026_001 --set-status valide
 
 Chaque commande accepte `--config`, `--set clé=valeur`, `--root`, `--log-level`
 et `-q`.
+
+### Traiter un gros corpus
+
+Trois options changent tout dès qu'on dépasse quelques dizaines de documents :
+
+```bash
+python -m bldp pipeline ./input --resume --workers 4 --keep-ocr review
+```
+
+| Option | Effet |
+|---|---|
+| `--resume` | saute les documents déjà traités **avec succès**. Une interruption ne fait plus tout recommencer ; un document en échec est toujours retenté. |
+| `--workers N` | traite N documents de front (`0` = un par cœur). Mesuré : ×1,9 sur 4 fils. |
+| `--keep-ocr review` | ne conserve les PDF OCRisés que pour les documents à vérifier — l'auditabilité là où elle sert, sans saturer le disque. |
+
+Les mêmes réglages existent en configuration :
+
+```yaml
+pipeline:
+  resume: true
+  workers: 4
+ocr:
+  keep_sidecar_for: review
+```
+
+Trois points à connaître :
+
+- **Le résultat est identique en parallèle et en séquentiel.** L'ordre des
+  documents suit l'entrée, jamais l'ordre d'achèvement : deux exécutions du
+  même lot produisent le même corpus.
+- **Avec `--workers > 1`, OCRmyPDF est bridé à un fil interne.** Sans cela, les
+  deux niveaux de parallélisme se multiplient et saturent la machine au lieu de
+  l'accélérer.
+- **Avec `--resume`, les exports sont régénérés depuis la base complète.**
+  N'exporter que le lot courant tronquerait `documents.jsonl` au dernier lot.
+
+Ordre de grandeur mesuré : **1,8 s/page** en séquentiel. Comptez ~70 Go de PDF
+OCRisés pour 10 000 documents si vous les conservez tous — d'où `--keep-ocr`.
 
 ### Interface web
 

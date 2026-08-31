@@ -23,13 +23,21 @@ from bldp.utils import hash_file, make_document_id, utc_now_iso
 logger = get_logger("loader")
 
 #: Sous-dossiers reconnus dans ``input/`` et catégorie associée.
+#: Le singulier comme le pluriel sont acceptés : rien n'oblige un utilisateur
+#: à deviner la convention du projet, et le classement manuel est de toute
+#: façon facultatif (§6).
 KNOWN_CATEGORIES = (
-    "lois",
-    "codes",
-    "decrets",
-    "arretes",
-    "jurisprudence",
-    "autres",
+    "lois", "loi",
+    "codes", "code",
+    "decrets", "decret",
+    "arretes", "arrete",
+    "ordonnances", "ordonnance",
+    "decisions", "decision",
+    "accords", "accord",
+    "conventions", "convention",
+    "circulaires", "circulaire",
+    "jurisprudence", "jurisprudences",
+    "autres", "autre",
 )
 
 #: Fichiers ignorés silencieusement lors du parcours.

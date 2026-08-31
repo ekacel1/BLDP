@@ -259,7 +259,12 @@ class TestProvenance:
         assert ids == ["doc_article_1er", "doc_article_2"]
         assert len(set(ids)) == len(ids)
 
-    def test_duplicate_numbers_are_disambiguated_and_flagged(self, config):
+    def test_an_annexe_article_is_not_a_duplicate(self, config):
+        """L'article premier d'une annexe n'est pas celui du corps.
+
+        Ils portaient le même identifiant et déclenchaient un faux
+        avertissement de doublon : une annexe ouvre sa **propre** numérotation.
+        """
         result = parse(
             [
                 "Article 1er : Disposition du corps du texte.\n"
@@ -268,8 +273,23 @@ class TestProvenance:
             ],
             config,
         )
+        corps, annexe = result.articles
+        assert corps.article_id != annexe.article_id
+        assert "annexe" in annexe.article_id
+        assert corps.annexe is None and annexe.annexe == "ANNEXE I"
+        assert not annexe.warnings, "aucun avertissement : ce n'est pas un doublon"
+
+    def test_a_real_duplicate_within_one_scope_is_flagged(self, config):
+        """Deux fois « Article 5 » dans le même corps reste une anomalie."""
+        result = parse(
+            [
+                "Article 5 : Premiere occurrence de la disposition.\n"
+                "Article 5 : Seconde occurrence, anormale, de la disposition."
+            ],
+            config,
+        )
         ids = [a.article_id for a in result.articles]
-        assert len(set(ids)) == 2
+        assert len(set(ids)) == 2, "les identifiants restent uniques"
         assert "numero_article_duplique_dans_le_document" in result.articles[1].warnings
 
 
@@ -588,3 +608,152 @@ class TestSignatureBoundary:
         )
         assert any(n.level is StructureLevel.ANNEXE for n in result.structure)
         assert len(result.articles) == 2
+
+
+class TestPromulgationInsideAnArticle:
+    """Régression trouvée sur des lois béninoises réelles.
+
+    Au Bénin, la formule de promulgation est un **article numéroté** :
+
+        Article 2 : La présente loi sera exécutée comme Loi de l'État.
+        Fait à Cotonou, le 14 juillet 2026
+
+    Le motif de fin de partie normative l'éliminait : un article réellement
+    voté disparaissait du corpus.
+    """
+
+    TEXTE = (
+        "Article 1er : Sont modifiees ainsi qu'il suit les dispositions de "
+        "l'article 94 de la loi n° 2024-28 du 26 juillet 2024.\n"
+        "Article 2 : La presente loi sera executee comme Loi de l'Etat.\n"
+        "Fait a Cotonou, le 14 juillet 2026\n"
+        "Par le President de la Republique\n"
+        "AMPLIATIONS : PR 1 - AN 1 - CC 1 - SGG 1 - JORB 1"
+    )
+
+    def test_the_promulgation_article_is_kept(self, config):
+        result = parse([self.TEXTE], config, jurisdiction="benin")
+        assert [a.article_number for a in result.articles] == ["1er", "2"]
+        assert "executee comme Loi de l'Etat" in result.articles[1].text
+
+    def test_the_signature_block_still_ends_the_normative_part(self, config):
+        result = parse([self.TEXTE], config, jurisdiction="benin")
+        dernier = result.articles[-1]
+        assert "Fait a Cotonou" not in dernier.text
+        assert "AMPLIATIONS" not in dernier.text
+        assert "Fait a Cotonou" in result.epilogue
+
+    def test_an_unnumbered_promulgation_formula_still_stops(self, config):
+        """Sans numéro d'article, la formule reste une clôture."""
+        result = parse(
+            [
+                "Article 1er : Unique disposition du present texte juridique.\n"
+                "La presente loi sera executee comme Loi de l'Etat.\n"
+                "Article 99 : mention parasite apres cloture."
+            ],
+            config,
+            jurisdiction="benin",
+        )
+        assert [a.article_number for a in result.articles] == ["1er"]
+
+
+class TestOpeningFormulaIsNotAClosure:
+    """Régression majeure trouvée sur 13 lois béninoises réelles.
+
+    Un texte béninois s'ouvre par :
+
+        Le Président de la République promulgue la loi dont la teneur suit :
+
+    Le motif générique de signature (« le président de la république » en début
+    de ligne) la prenait pour une **clôture**. Résultat : tous les articles du
+    document étaient ignorés, et le corpus ne conservait qu'un préambule.
+    """
+
+    PREAMBULE_REEL = (
+        "REPUBLIQUE DU BENIN\n"
+        "LOI N° 2025 - 07 DU 24 MARS 2025\n"
+        "portant modification de la loi n° 2022-11 du 27 juin 2022\n"
+        "L'Assemblee nationale a delibere et adopte en sa seance du 12 mars 2025 ;\n"
+        "Le President de la Republique promulgue la loi dont la teneur suit :\n"
+        "Article 1er : Sont modifiees les dispositions des articles 5, 10 et 12.\n"
+        "Article 2 : La presente loi entre en vigueur des sa promulgation.\n"
+        "Fait a Cotonou, le 24 mars 2025\n"
+        "Par le President de la Republique,\n"
+        "Patrice TALON"
+    )
+
+    def test_articles_survive_the_opening_formula(self, config):
+        result = parse([self.PREAMBULE_REEL], config, jurisdiction="benin")
+        assert [a.article_number for a in result.articles] == ["1er", "2"]
+
+    def test_the_real_signature_still_closes(self, config):
+        result = parse([self.PREAMBULE_REEL], config, jurisdiction="benin")
+        assert "Fait a Cotonou" not in result.articles[-1].text
+        assert "Patrice TALON" not in result.articles[-1].text
+        assert "Fait a Cotonou" in result.epilogue
+
+    @pytest.mark.parametrize(
+        "ligne, attendu",
+        [
+            ("Le President de la Republique promulgue la loi dont la teneur suit :", False),
+            ("L'Assemblee nationale a delibere et adopte en sa seance du 12 mars ;", False),
+            ("Par le President de la Republique,", True),
+            ("Fait a Cotonou, le 24 mars 2025", True),
+            ("Ainsi fait et delibere", True),
+        ],
+    )
+    def test_opening_and_closing_formulas_are_distinguished(self, ligne, attendu):
+        assert get_jurisdiction("benin").ruleset.is_stop_line(ligne) is attendu
+
+    def test_never_stop_patterns_are_merged_into_jurisdictions(self):
+        """Le garde-fou générique doit survivre à la fusion avec une juridiction."""
+        assert get_jurisdiction("benin").ruleset.never_stop_patterns
+
+
+class TestLongArticlesAreNotLost:
+    """Régression trouvée sur une loi béninoise réelle.
+
+    Après recollage des retours à la ligne, l'article 38 de la loi 2025-09
+    faisait 413 caractères — au-delà du `max_line_length` de la règle, qui
+    refusait donc de l'examiner. **L'article disparaissait du corpus sans le
+    moindre avertissement.**
+
+    Le garde-fou visait à empêcher qu'un paragraphe soit pris pour un titre ;
+    or pour un article, ce qui suit le numéro *est* le contenu normatif.
+    """
+
+    def test_a_very_long_article_is_still_detected(self, config):
+        corps = (
+            "La cessation des fonctions d'un roi, d'un chef superieur ou d'un chef "
+            "coutumier, entrainant la vacance du siege, intervient par suite de "
+        ) * 4
+        result = parse(
+            [f"Article 37 : Disposition precedente du texte.\nArticle 38 : {corps}"],
+            config,
+            jurisdiction="benin",
+        )
+        assert [a.article_number for a in result.articles] == ["37", "38"]
+        assert len(result.articles[1].text) > 400
+        assert "cessation des fonctions" in result.articles[1].text
+
+    def test_no_gap_is_reported_for_a_long_article(self, config):
+        """Le symptôme visible du bug était une fausse anomalie de numérotation."""
+        corps = "Disposition longue. " * 30
+        result = parse(
+            [
+                f"Article 37 : Courte disposition.\n"
+                f"Article 38 : {corps}\n"
+                f"Article 39 : Autre courte disposition."
+            ],
+            config,
+            jurisdiction="benin",
+        )
+        assert check_numbering(result.articles) == []
+
+    def test_a_long_paragraph_is_still_not_a_chapter(self, config):
+        """Le garde-fou reste actif là où il sert : les subdivisions."""
+        ligne = "Chapitre 3 " + "des dispositions diverses et transitoires " * 12
+        result = parse([f"{ligne}\nArticle 1er : disposition du texte."], config)
+        assert not any(
+            n.level is StructureLevel.CHAPITRE for n in result.structure
+        ), "un paragraphe long commençant par « Chapitre » n'est pas un en-tête"

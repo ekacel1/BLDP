@@ -323,7 +323,60 @@ def check_metadata(document: Document) -> tuple[float, list[QualityIssue]]:
                 count=len(weak),
             )
         )
+
+    issues.extend(_check_number_date_consistency(document.metadata))
     return completeness, issues
+
+
+#: Numéro officiel dont la première partie est un millésime : « 2025-18 ».
+_YEAR_NUMBER_RE = re.compile(r"^(?P<year>(?:19|20)\d{2})\D")
+
+
+def _check_number_date_consistency(metadata) -> list[QualityIssue]:
+    """Compare le millésime du numéro officiel à l'année de la date.
+
+    « LOI n° 2025-11 … » datée de 2024 est nécessairement suspecte : soit la
+    date est celle d'un texte cité, soit l'OCR a mal lu un chiffre. Le pipeline
+    ne tranche pas — il signale, car les deux valeurs sont plausibles prises
+    isolément et seul un humain peut dire laquelle est juste.
+    """
+    number, date = metadata.number, metadata.date
+    if not number or not date:
+        return []
+
+    match = _YEAR_NUMBER_RE.match(number)
+    if not match:
+        return []
+
+    number_year = int(match.group("year"))
+    try:
+        date_year = int(date[:4])
+        date_month = int(date[5:7])
+    except (TypeError, ValueError):
+        return []
+
+    if date_year == number_year:
+        return []
+
+    # Tolérance **contextuelle**, et non un simple ±1 an : un texte adopté fin
+    # décembre peut être promulgué début janvier suivant. En revanche, une loi
+    # « 2025-11 » datée de septembre 2024 n'est explicable ni par le calendrier
+    # ni par le hasard — c'est une date empruntée ou une erreur d'OCR.
+    near_boundary = date_month in (1, 2, 11, 12)
+    if abs(date_year - number_year) == 1 and near_boundary:
+        return []
+
+    return [
+        QualityIssue(
+            code="date_incoherente_avec_le_numero",
+            severity="warning",
+            message=(
+                f"le numéro officiel indique l'année {number_year} mais la date "
+                f"retenue est {date} — date d'un texte cité, ou erreur d'OCR ; "
+                "à trancher manuellement"
+            ),
+        )
+    ]
 
 
 def check_duplicates(document: Document) -> list[QualityIssue]:

@@ -81,6 +81,8 @@ def tesseract_languages() -> list[str]:
             ["tesseract", "--list-langs"],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=30,
             check=False,
         )
@@ -108,15 +110,34 @@ def check_ocr_ready(config: Config) -> tuple[bool, list[str]]:
         )
         return False, problems
 
+    # OCRmyPDF n'est qu'un **pilote** : il rastérise le PDF et délègue la
+    # reconnaissance à Tesseract. Le déclarer suffisant alors que Tesseract
+    # manque revient à annoncer un OCR opérationnel qui échouera à la première
+    # page — la dégradation silencieuse que le projet cherche à éviter.
+    if not tesseract_available():
+        problems.append(
+            "tesseract est introuvable dans le PATH. OCRmyPDF s'appuie sur lui "
+            "et ne peut fonctionner seul : installez Tesseract, puis rouvrez "
+            "un terminal."
+        )
+        return False, problems
+
     language = str(config.get("ocr.language", "fra"))
     installed = tesseract_languages()
-    if installed:
-        missing = [lang for lang in language.split("+") if lang not in installed]
-        if missing:
-            problems.append(
-                f"langue(s) Tesseract absente(s) : {', '.join(missing)} "
-                f"(installées : {', '.join(installed)})"
-            )
+    if not installed:
+        problems.append(
+            "impossible de lister les langues de Tesseract "
+            "(`tesseract --list-langs` muet). Vérifiez TESSDATA_PREFIX : il doit "
+            "pointer vers le dossier contenant les fichiers .traineddata."
+        )
+        return False, problems
+
+    missing = [lang for lang in language.split("+") if lang not in installed]
+    if missing:
+        problems.append(
+            f"langue(s) Tesseract absente(s) : {', '.join(missing)} "
+            f"(installées : {', '.join(installed)})"
+        )
     return not problems, problems
 
 
@@ -133,6 +154,7 @@ def run_ocrmypdf(
     skip_text: bool = True,
     timeout: int = 1800,
     force: bool = False,
+    jobs: int = 0,
 ) -> Path:
     """Produit une version OCRisée du PDF avec ``ocrmypdf``.
 
@@ -145,6 +167,10 @@ def run_ocrmypdf(
         timeout: délai maximal en secondes.
         force: ré-OCRiser même les pages contenant du texte (exclusif de
             ``skip_text``).
+        jobs: fils internes d'OCRmyPDF ; ``0`` laisse l'outil décider. À fixer
+            à 1 lorsque plusieurs documents sont traités en parallèle, sinon
+            les deux niveaux de parallélisme se multiplient et saturent la
+            machine au lieu de l'accélérer.
 
     Raises:
         OcrUnavailableError: binaire absent.
@@ -171,12 +197,20 @@ def run_ocrmypdf(
         command.append("--force-ocr")
     elif skip_text:
         command.append("--skip-text")
+    if jobs > 0:
+        command += ["--jobs", str(jobs)]
     command += [str(source_path), str(target_path)]
 
     logger.info("OCR (ocrmypdf) sur %s → %s", source_path.name, target_path.name)
     try:
         completed = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout, check=False
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise OcrError(f"OCR interrompu après {timeout}s sur {source_path.name}") from exc
@@ -228,7 +262,13 @@ def _tesseract_text(image_path: Path, language: str, timeout: int) -> str:
     command = ["tesseract", str(image_path), "stdout", "-l", language]
     try:
         completed = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout, check=False
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
     except subprocess.TimeoutExpired as exc:
         raise OcrError(f"Tesseract interrompu après {timeout}s ({image_path.name})") from exc
@@ -246,7 +286,13 @@ def _tesseract_confidence(image_path: Path, language: str, timeout: int) -> Opti
     command = ["tesseract", str(image_path), "stdout", "-l", language, "tsv"]
     try:
         completed = subprocess.run(
-            command, capture_output=True, text=True, timeout=timeout, check=False
+            command,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -376,6 +422,7 @@ def ocr_document(
     skip_text = bool(config.get("ocr.skip_text", True))
     timeout = int(config.get("ocr.timeout_seconds", 1800))
     keep_pdf = bool(config.get("ocr.keep_sidecar_pdf", True))
+    jobs = int(config.get("ocr.jobs", 0))
     preferred = str(config.get("ocr.engine", "ocrmypdf"))
 
     engines = available_engines()
@@ -405,7 +452,7 @@ def ocr_document(
             if engine == "ocrmypdf":
                 return _ocr_via_ocrmypdf(
                     path, document_id, config, output_dir, language, dpi,
-                    skip_text, timeout, keep_pdf, source_file,
+                    skip_text, timeout, keep_pdf, source_file, jobs,
                 )
             return ocr_pages_with_tesseract(
                 path, document_id, None, language, dpi, min(timeout, 600), source_file
@@ -430,6 +477,7 @@ def _ocr_via_ocrmypdf(
     timeout: int,
     keep_pdf: bool,
     source_file: str | None,
+    jobs: int = 0,
 ) -> ExtractionResult:
     """OCRmyPDF puis relecture native du PDF enrichi."""
     import tempfile
@@ -439,15 +487,17 @@ def _ocr_via_ocrmypdf(
 
     if keep_pdf:
         ocr_pdf = destination / f"{document_id}_ocr.pdf"
-        produced = run_ocrmypdf(path, ocr_pdf, language, dpi, skip_text, timeout)
+        produced = run_ocrmypdf(path, ocr_pdf, language, dpi, skip_text, timeout, jobs=jobs)
         result = extract_document(
-            produced, document_id, source_file=source_file or Path(path).name
+            produced, document_id, source_file=source_file or Path(path).name,
+            sort_blocks=bool(config.get("extraction.sort_blocks", True)),
         )
         result.ocr_pdf_path = str(produced)
     else:
         with tempfile.TemporaryDirectory(prefix="bldp_ocr_") as workdir:
             produced = run_ocrmypdf(
-                path, Path(workdir) / "ocr.pdf", language, dpi, skip_text, timeout
+                path, Path(workdir) / "ocr.pdf", language, dpi, skip_text, timeout,
+                jobs=jobs,
             )
             result = extract_document(
                 produced, document_id, source_file=source_file or Path(path).name
@@ -476,15 +526,21 @@ def extract_with_route(
     """
     label = source_file or Path(path).name
 
+    sort_blocks = bool(config.get("extraction.sort_blocks", True))
+
     if route == "native":
-        return extract_document(path, document_id, source_file=label)
+        return extract_document(
+            path, document_id, source_file=label, sort_blocks=sort_blocks
+        )
 
     if route == "ocr":
         try:
             return ocr_document(path, document_id, config, source_file=label)
         except (OcrUnavailableError, OcrError) as exc:
             logger.error("OCR impossible pour %s : %s", document_id, exc)
-            fallback = extract_document(path, document_id, source_file=label)
+            fallback = extract_document(
+                path, document_id, source_file=label, sort_blocks=sort_blocks
+            )
             fallback.warnings.append(
                 f"OCR requis mais indisponible ({exc}) — texte natif partiel, "
                 "vérification humaine nécessaire"
@@ -506,7 +562,10 @@ def _extract_hybrid(
     label: str,
 ) -> ExtractionResult:
     """Texte natif partout, OCR uniquement sur les pages pauvres en texte."""
-    result = extract_document(path, document_id, source_file=label)
+    result = extract_document(
+        path, document_id, source_file=label,
+        sort_blocks=bool(config.get("extraction.sort_blocks", True)),
+    )
     if not ocr_pages:
         return result
 

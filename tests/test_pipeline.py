@@ -427,3 +427,32 @@ class TestEmbeddingsBranch:
         assert result.embeddings_count == 0
         assert result.chunks, "les fragments restent produits"
         assert Path(result.exports["sqlite"]).exists()
+
+
+class TestCliIntegrity:
+    """Garde-fou : chaque commande déclarée doit avoir son gestionnaire.
+
+    Une suppression un peu large dans `cli.py` a déjà fait disparaître
+    `cmd_serve` : le parseur se construisait, mais la commande explosait à
+    l'exécution. Ce test rend la classe d'erreur impossible.
+    """
+
+    def test_every_command_has_a_handler(self):
+        import ast
+        import re
+        from pathlib import Path
+
+        source = Path("bldp/cli.py").read_text(encoding="utf-8")
+        definies = {
+            node.name
+            for node in ast.walk(ast.parse(source))
+            if isinstance(node, ast.FunctionDef)
+        }
+        referencees = set(re.findall(r"set_defaults\(func=(\w+)\)", source))
+        assert referencees, "aucune commande déclarée ?"
+        assert referencees <= definies, f"gestionnaires manquants : {referencees - definies}"
+
+    def test_the_parser_builds_without_error(self):
+        from bldp.cli import build_parser
+
+        assert build_parser() is not None

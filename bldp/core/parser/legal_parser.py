@@ -44,6 +44,22 @@ from bldp.utils import make_article_id, parse_number, slugify
 
 logger = get_logger("parser")
 
+#: Nombre d'en-têtes d'article requis, après la formule de promulgation, pour
+#: considérer qu'il s'agit d'un texte annexé et non d'un artefact isolé.
+MIN_ANNEXED_ARTICLES = 2
+
+#: Libellé du nœud d'annexe créé pour un texte annexé sans intitulé propre.
+IMPLICIT_ANNEX_LABEL = "[Texte annexé]"
+
+#: Règle fictive portant ce nœud : il ne provient d'aucune ligne reconnue, mais
+#: le modèle exige une règle. Le libellé signale sa nature déduite.
+IMPLICIT_ANNEX_RULE = StructureRule(
+    level=StructureLevel.ANNEXE,
+    pattern=re.compile(r"(?!)"),   # ne reconnaît jamais rien
+    priority=999,
+    name="annexe_implicite",
+)
+
 
 # ---------------------------------------------------------------------------
 # Texte linéarisé avec traçabilité des pages
@@ -119,16 +135,34 @@ def _clean_number(raw: str | None) -> Optional[str]:
     return compact or None
 
 
+def is_stop_line(text: str, ruleset: RuleSet) -> bool:
+    """Vrai si la ligne clôt la partie normative **et n'est pas un en-tête**.
+
+    Cette double condition n'est pas théorique. Dans les lois béninoises, la
+    formule de promulgation est elle-même un article numéroté :
+
+    .. code-block:: text
+
+        Article 2 : La présente loi sera exécutée comme Loi de l'État.
+        Fait à Cotonou, le 14 juillet 2026
+
+    Sans ce garde-fou, l'article 2 disparaissait du corpus — un article
+    réellement voté, perdu au motif qu'il ressemble à une formule de clôture.
+    Seule la seconde ligne met véritablement fin au texte normatif.
+    """
+    return ruleset.is_stop_line(text) and ruleset.match_line(text) is None
+
+
 def find_stop_index(lines: Sequence[LineRef], ruleset: RuleSet) -> Optional[int]:
     """Indice de la première ligne mettant fin à la partie normative.
 
-    Les formules de promulgation (« Fait à Cotonou, le … ») ne sont pas des
+    Les formules de signature (« Fait à Cotonou, le … ») ne sont pas des
     en-têtes : sans cette borne, elles seraient absorbées dans le texte du
     dernier article, qui porterait alors un contenu non normatif.
     """
     for line in lines:
         stripped = line.text.strip()
-        if stripped and ruleset.is_stop_line(stripped):
+        if stripped and is_stop_line(stripped, ruleset):
             return line.index
     return None
 
@@ -147,7 +181,11 @@ def detect_headings(
             fantômes à partir de la table des matières.
     """
     headings: list[Heading] = []
+    #: En-têtes rencontrés **après** la formule de promulgation. Ils sont mis
+    #: de côté plutôt qu'ignorés : voir la réintégration en fin de fonction.
+    after_closure: list[Heading] = []
     normative_ended = False
+    closure_line: Optional[LineRef] = None
 
     for line in lines:
         stripped = line.text.strip()
@@ -155,10 +193,13 @@ def detect_headings(
             continue
         if skip_toc and ruleset.is_toc_line(stripped):
             continue
-        if ruleset.is_stop_line(stripped):
-            # La formule de promulgation clôt le corps normatif : ce qui suit
-            # (signatures, mentions de publication) ne doit pas produire
-            # d'articles fantômes.
+        if is_stop_line(stripped, ruleset):
+            if closure_line is None:
+                closure_line = line
+            # La formule de signature clôt le corps normatif : ce qui suit
+            # (paraphes, ampliations, mentions de publication) ne doit pas
+            # produire d'articles fantômes. Un article numéroté portant la
+            # formule de promulgation n'est pas concerné : il reste un article.
             normative_ended = True
             continue
 
@@ -172,8 +213,6 @@ def detect_headings(
             # normatif (barèmes, formulaires, listes). L'ignorer perdrait du
             # texte que le document porte réellement.
             normative_ended = False
-        elif normative_ended:
-            continue
 
         groups = match.groupdict()
         number = _clean_number(groups.get("number"))
@@ -193,19 +232,58 @@ def detect_headings(
             inline_text = tail
             heading_text = None
 
-        headings.append(
-            Heading(
-                rule=rule,
-                level=rule.level,
-                number=number,
-                heading=heading_text,
-                line=line,
-                label=stripped,
-                inline_text=inline_text,
-            )
+        entry = Heading(
+            rule=rule,
+            level=rule.level,
+            number=number,
+            heading=heading_text,
+            line=line,
+            label=stripped,
+            inline_text=inline_text,
         )
+        (after_closure if normative_ended else headings).append(entry)
+
+    # Un texte **annexé** (accord international, convention, barème) suit
+    # fréquemment la promulgation sans être introduit par le mot « ANNEXE ».
+    # L'ignorer ferait disparaître du droit : une ordonnance de ratification
+    # perdait ainsi les 10 articles de l'accord qu'elle approuve.
+    #
+    # On ne réintègre qu'une **série** d'articles : un « Article 99 » isolé
+    # après signature reste, lui, un artefact (tampon, mention de publication).
+    articles_after = [h for h in after_closure if h.level is StructureLevel.ARTICLE]
+    if len(articles_after) >= MIN_ANNEXED_ARTICLES:
+        logger.info(
+            "%d en-tête(s) d'article après la promulgation : texte annexé "
+            "réintégré au document.",
+            len(articles_after),
+        )
+        # Le texte annexé est rattaché à une **annexe implicite**. Sans ce nœud,
+        # ses articles se mêlaient à ceux du corps : la numérotation repartait
+        # de « premier » au milieu de la séquence, produisant des doublons
+        # d'identifiants et des dizaines de fausses ruptures. L'annexe leur rend
+        # aussi leur contexte, comme n'importe quelle subdivision.
+        anchor = closure_line or articles_after[0].line
+        headings.append(_implicit_annex_heading(anchor))
+        headings.extend(after_closure)
 
     return headings
+
+
+def _implicit_annex_heading(line: LineRef) -> Heading:
+    """Nœud d'annexe synthétique, pour un texte annexé non intitulé.
+
+    Un accord international annexé à une ordonnance de ratification suit la
+    promulgation sans le mot « ANNEXE ». On matérialise donc la subdivision que
+    le document sous-entend, plutôt que de laisser ses articles orphelins.
+    """
+    return Heading(
+        rule=IMPLICIT_ANNEX_RULE,
+        level=StructureLevel.ANNEXE,
+        number=None,
+        heading=None,
+        line=line,
+        label=IMPLICIT_ANNEX_LABEL,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -433,9 +511,15 @@ def parse_document(
 
         context = contexts.get(start_index, [])
         number = heading.number or str(position + 1)
+        # Une annexe ouvre sa propre numérotation : elle entre donc dans
+        # l'identifiant, faute de quoi « Article premier » du corps et celui de
+        # l'accord annexé porteraient le même.
+        annexe_label = _context_field(context, StructureLevel.ANNEXE)
 
         article = Article(
-            article_id=make_article_id(document_id, number, position),
+            article_id=make_article_id(
+                document_id, number, position, scope=annexe_label or ""
+            ),
             document_id=document_id,
             article_number=number,
             text=text,
@@ -452,7 +536,7 @@ def parse_document(
             chapter=_context_field(context, StructureLevel.CHAPITRE),
             section=_context_field(context, StructureLevel.SECTION),
             subsection=_context_field(context, StructureLevel.SOUS_SECTION),
-            annexe=_context_field(context, StructureLevel.ANNEXE),
+            annexe=annexe_label,
             hierarchy_path=[node.label for node in context],
             numeric_value=parse_number(number),
             source_file=source_file or (pages[0].source_file if pages else ""),
@@ -518,12 +602,54 @@ def _disambiguate_ids(articles: Sequence[Article]) -> list[Article]:
 # ---------------------------------------------------------------------------
 
 
+#: Valeur en deçà de laquelle un retour en arrière est lu comme le **début
+#: d'une nouvelle série**, et non comme une anomalie.
+_SEQUENCE_RESTART_MAX = 2.0
+
+
 def check_numbering(articles: Sequence[Article]) -> list[str]:
     """Repère les ruptures de numérotation des articles.
 
     Une séquence ``1, 2, 4`` fait remonter un signalement : c'est le symptôme
     typique d'un article manqué à l'extraction ou d'une page absente. Le parser
     **signale** sans corriger — corriger reviendrait à inventer du droit.
+
+    Deux précautions évitent de noyer les vraies alertes sous du bruit :
+
+    * la vérification se fait **par annexe**, car un texte annexé possède sa
+      propre numérotation, indépendante de celle du corps ;
+    * à l'intérieur d'une annexe, un retour à ``1`` ou ``2`` ouvre une nouvelle
+      série plutôt qu'une anomalie — plusieurs accords peuvent être annexés à
+      un même texte, chacun repartant de « Article premier ».
+
+    Sans ces règles, une seule ordonnance de ratification produisait seize
+    fausses ruptures.
+    """
+    anomalies: list[str] = []
+    for scope, scope_articles in _numbering_scopes(articles).items():
+        # Le redémarrage n'est toléré que dans une annexe : plusieurs textes
+        # peuvent y être annexés, chacun repartant de « Article premier ». Dans
+        # le corps d'un texte, un retour en arrière reste une anomalie.
+        anomalies.extend(_check_one_sequence(scope_articles, allow_restart=bool(scope)))
+    return anomalies
+
+
+def _numbering_scopes(articles: Sequence[Article]) -> dict[str, list[Article]]:
+    """Regroupe les articles par portée de numérotation (corps, puis annexes)."""
+    scopes: dict[str, list[Article]] = {}
+    for article in articles:
+        scopes.setdefault(article.annexe or "", []).append(article)
+    return scopes
+
+
+def _check_one_sequence(
+    articles: Sequence[Article], allow_restart: bool = False
+) -> list[str]:
+    """Contrôle une séquence homogène.
+
+    Args:
+        allow_restart: tolérer un retour à un petit numéro comme début d'une
+            nouvelle série, au lieu de le signaler.
     """
     anomalies: list[str] = []
     numbered = [a for a in articles if a.numeric_value is not None]
@@ -534,6 +660,10 @@ def check_numbering(articles: Sequence[Article]) -> list[str]:
     for article in numbered[1:]:
         gap = article.numeric_value - previous.numeric_value
         if gap <= 0:
+            if allow_restart and article.numeric_value <= _SEQUENCE_RESTART_MAX:
+                # Nouvelle série : on repart de ce numéro sans rien signaler.
+                previous = article
+                continue
             anomalies.append(
                 f"numérotation non croissante : article {previous.article_number} "
                 f"suivi de l'article {article.article_number}"

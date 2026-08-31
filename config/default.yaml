@@ -21,12 +21,31 @@ paths:
   logs: "logs"
   database: "data/exports/legal_database.sqlite"
 
+# --- Exécution : reprise et parallélisme -----------------------------------
+pipeline:
+  # Sauter les documents déjà traités avec succès (empreinte identique).
+  # Indispensable sur de gros lots : une interruption ne fait plus tout
+  # recommencer. Un document en échec est toujours retenté.
+  resume: false
+  # Documents traités de front. 0 = un par cœur.
+  # Le temps est passé dans OCRmyPDF/Tesseract, des sous-processus : des fils
+  # suffisent, sans sérialisation entre processus.
+  workers: 1
+
 ingest:
   extensions: [".pdf"]          # .docx/.txt/.html prévus ultérieurement
   recursive: true
   # Copier les originaux dans data/raw/ (les sources ne sont jamais modifiées)
   copy_to_raw: true
   follow_symlinks: false
+
+# --- Module 3 : extraction ---------------------------------------------------
+extraction:
+  # Remettre les blocs de texte dans l'ordre de lecture (tri par position).
+  # L'ordre stocké dans un PDF numérisé ne suit pas toujours la lecture : les
+  # articles ressortaient alors dans le désordre. À désactiver pour un document
+  # à plusieurs colonnes, où le tri par (y, x) entrelacerait les colonnes.
+  sort_blocks: true
 
 # --- Module 2 : analyse du PDF / décision OCR --------------------------------
 classifier:
@@ -50,6 +69,15 @@ ocr:
   timeout_seconds: 1800
   # Conserver le PDF OCRisé pour audit
   keep_sidecar_pdf: true
+  # Politique de rétention de ces PDF, appliquée après le contrôle qualité :
+  #   all    : tout conserver (défaut)
+  #   review : ne garder que les documents à vérifier — l'auditabilité là où
+  #            elle sert, sans saturer le disque sur un gros corpus
+  #   none   : ne rien conserver
+  keep_sidecar_for: all
+  # Fils internes d'OCRmyPDF. 0 = laisser l'outil décider. Ramené à 1
+  # automatiquement quand pipeline.workers > 1, pour ne pas saturer la machine.
+  jobs: 0
 
 # --- Module 4 : nettoyage ----------------------------------------------------
 cleaning:

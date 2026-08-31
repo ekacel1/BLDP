@@ -32,7 +32,14 @@ from bldp.models import (
     SourceFile,
 )
 from bldp.jurisdictions.registry import JurisdictionProfile, get_profile
-from bldp.utils import read_json, today_iso
+from bldp.utils import (
+    NUMERO_PREFIX,
+    OCR_DIGIT,
+    normalize_dashes,
+    normalize_ocr_number,
+    read_json,
+    today_iso,
+)
 
 logger = get_logger("metadata")
 
@@ -45,11 +52,17 @@ MONTHS = {
 
 #: Type déduit du sous-dossier d'importation (indice faible mais utile).
 CATEGORY_TO_TYPE = {
-    "lois": DocumentType.LOI,
-    "codes": DocumentType.CODE,
-    "decrets": DocumentType.DECRET,
-    "arretes": DocumentType.ARRETE,
+    "lois": DocumentType.LOI, "loi": DocumentType.LOI,
+    "codes": DocumentType.CODE, "code": DocumentType.CODE,
+    "decrets": DocumentType.DECRET, "decret": DocumentType.DECRET,
+    "arretes": DocumentType.ARRETE, "arrete": DocumentType.ARRETE,
+    "ordonnances": DocumentType.ORDONNANCE, "ordonnance": DocumentType.ORDONNANCE,
+    "decisions": DocumentType.DECISION, "decision": DocumentType.DECISION,
+    "accords": DocumentType.CONVENTION, "accord": DocumentType.CONVENTION,
+    "conventions": DocumentType.CONVENTION, "convention": DocumentType.CONVENTION,
+    "circulaires": DocumentType.CIRCULAIRE, "circulaire": DocumentType.CIRCULAIRE,
     "jurisprudence": DocumentType.JURISPRUDENCE,
+    "jurisprudences": DocumentType.JURISPRUDENCE,
 }
 
 #: Domaines juridiques reconnus par mots-clés (indicatif, jamais bloquant).
@@ -76,19 +89,85 @@ SIDECAR_SUFFIXES = (".meta.yaml", ".meta.yml", ".meta.json")
 #: à la ligne artificiels, si bien que « LOI N° 2026-001 » et « portant … » se
 #: retrouvent souvent fusionnés sur une seule ligne.
 TITLE_KEYWORD_RE = re.compile(
-    r"\b(?:portant|relatives?\s+[àa]|relatif\s+[àa]|fixant|instituant|"
-    r"modifiant|compl[ée]tant|abrogeant|cr[ée]ant|organisant)\b",
+    # « relative aux associations » est aussi courant que « relative à » :
+    # n'accepter que « à » faisait manquer l'intitulé et retomber sur la
+    # devise nationale imprimée en tête de page.
+    r"\b(?:portant|relatives?\s+(?:aux?|[àa])|relatifs?\s+(?:aux?|[àa])"
+    r"|fixant|instituant|modifiant|compl[ée]tant|abrogeant|cr[ée]ant"
+    r"|organisant|autorisant|approuvant|ratifiant)\b",
     re.IGNORECASE,
 )
 
 #: Début d'article : au-delà, on ne cherche plus d'intitulé de document.
 _ARTICLE_START_RE = re.compile(r"^\s*(?:article|art\.)\s", re.IGNORECASE)
 
+#: Lignes de papier à en-tête, jamais un intitulé de texte.
+#:
+#: « Fraternité-Justice-Travail » est la devise nationale béninoise, imprimée
+#: sur chaque page officielle. Sans ce filtre, elle devenait le titre du
+#: document dès que l'intitulé n'était pas reconnu.
+_BOILERPLATE_LINE_RE = re.compile(
+    r"^\s*(?:"
+    r"r[ée]publique\s+du\b"
+    r"|fraternit[ée]\s*[-–—]\s*justice\s*[-–—]\s*travail"
+    r"|assembl[ée]e\s+nationale\s*$"
+    r"|pr[ée]sidence\s+de\s+la\s+r[ée]publique\s*$"
+    r"|secr[ée]tariat\s+g[ée]n[ée]ral\s+du\s+gouvernement\s*$"
+    r"|journal\s+officiel\b"
+    r"|minist[èe]re\s+"
+    r")",
+    re.IGNORECASE,
+)
+
+
+#: Ligne de **visa** : « Vu la loi n° 90-32 du 11 décembre 1990 … ».
+#:
+#: Tout texte réglementaire béninois s'ouvre sur une liste de visas citant
+#: d'autres textes, avec leurs numéros et leurs dates. Les confondre avec
+#: l'intitulé faisait dater de 1990 des décrets de 2026 : la loi 90-32 portant
+#: Constitution est visée par à peu près tout.
+CITATION_LINE_RE = re.compile(
+    r"^\s*(?:vu\b|consid[ée]rant\b|sur\s+rapport\b|apr[èe]s\s+avis\b)",
+    re.IGNORECASE,
+)
+
+#: Formule qui trahit une citation même sans « Vu » en tête, l'OCR déplaçant
+#: souvent ces mots : « … la loi n° 90-32 … portant Constitution … ».
+_INLINE_CITATION_RE = re.compile(
+    r"\b(?:la\s+loi|le\s+d[ée]cret|l['’]?ordonnance|l['’]?arr[êe]t[ée])\s+n",
+    re.IGNORECASE,
+)
+
+
+def strip_citation_lines(text: str) -> str:
+    """Retire les lignes de visa, qui citent d'autres textes.
+
+    Conserve les lignes qui ne sont pas des citations : l'objectif n'est pas de
+    nettoyer le document — le texte intégral reste intact dans les pages — mais
+    de fournir aux détecteurs de métadonnées une vue débarrassée des références
+    étrangères.
+    """
+    gardees = [
+        ligne
+        for ligne in text.split("\n")
+        if not CITATION_LINE_RE.match(ligne) and not _INLINE_CITATION_RE.search(ligne)
+    ]
+    return "\n".join(gardees)
+
+
+def _condense(value: str) -> str:
+    """Retire espaces et séparateurs, pour comparer deux formes d'un numéro.
+
+    Neutralise **tous** les tirets Unicode et l'underscore : ne traiter que
+    ``-`` et ``–`` faisait échouer la comparaison sur les numéros rendus par
+    l'OCR avec un cadratin ou un underscore.
+    """
+    return re.sub(r"\s+", "", normalize_dashes(value)).replace("_", "-")
+
 
 def _mentions_number(line: str, number: str) -> bool:
     """Vrai si la ligne contient le numéro officiel, quelle que soit sa forme."""
-    compact = re.sub(r"[\s\-–]", "", line)
-    return re.sub(r"[\s\-–]", "", number) in compact
+    return _condense(number) in _condense(line)
 
 
 # ---------------------------------------------------------------------------
@@ -152,14 +231,55 @@ def normalize_date(day: str, month: str | None, year: str, month_num: str | None
     return f"{year_value:04d}-{month_value:02d}-{day_value:02d}"
 
 
-def detect_date(text: str, profile: JurisdictionProfile | None) -> tuple[Optional[str], float, str]:
-    """Repère la date de signature du texte.
+#: Début d'une référence à un autre texte, à l'intérieur d'un intitulé.
+#:
+#: Utilise le même préfixe tolérant que la détection de numéro : sur un scan
+#: dégradé (« n' », « N" »), un motif strict échouait silencieusement à tronquer
+#: l'intitulé, et la date du texte *cité* pouvait alors être retenue à pleine
+#: confiance.
+_NEXT_REFERENCE_RE = re.compile(NUMERO_PREFIX + OCR_DIGIT, re.IGNORECASE)
+
+
+def _own_heading_segment(line: str, number: str) -> Optional[str]:
+    """Portion de ligne appartenant à l'intitulé **propre** du document.
+
+    Le nettoyage recolle les retours à la ligne, si bien qu'un intitulé et la
+    référence qu'il cite se retrouvent sur la même ligne ::
+
+        LOI n° 2025-11 DU 1er JUILLET 2025 portant modification de la
+        loi n° 2024-09 du 02 septembre 2024
+
+    Chercher une date « sur la ligne du numéro » ne suffit donc pas : lorsque
+    la date propre est illisible (l'OCR rend « 1er » par « 1FF »), c'est la
+    date du texte *cité* qui serait retenue — et à pleine confiance. On coupe
+    donc la ligne juste avant la référence suivante.
 
     Returns:
-        ``(date_iso, confiance, preuve)``. La forme « du 10 février 2026 » est
-        la plus fiable : c'est celle qui figure dans l'intitulé officiel.
+        Le segment, ou ``None`` si la ligne ne porte pas le numéro cherché.
     """
-    patterns = profile.date_patterns if profile else []
+    compact_number = re.sub(r"[\s]", "", normalize_dashes(number))
+
+    # Position du numéro, en tolérant les espaces et variantes de tirets.
+    normalized = normalize_dashes(line)
+    condensed = re.sub(r"\s+", "", normalized)
+    if compact_number not in condensed:
+        return None
+
+    # Reconstruit la position réelle dans la ligne d'origine.
+    index_map = [i for i, char in enumerate(normalized) if not char.isspace()]
+    start_condensed = condensed.index(compact_number)
+    end_condensed = start_condensed + len(compact_number)
+    if end_condensed > len(index_map):
+        return None
+    end = index_map[end_condensed - 1] + 1
+
+    # Coupe avant la référence suivante (« … modifiant la loi n° 2024-09 »).
+    following = _NEXT_REFERENCE_RE.search(normalized, end)
+    return normalized[:following.start()] if following else normalized
+
+
+def _search_date(text: str, patterns) -> tuple[Optional[str], int, str]:
+    """Première date interprétable du texte : ``(iso, rang_du_motif, preuve)``."""
     for rank, pattern in enumerate(patterns):
         match = pattern.search(text)
         if not match:
@@ -172,10 +292,58 @@ def detect_date(text: str, profile: JurisdictionProfile | None) -> tuple[Optiona
             groups.get("month_num"),
         )
         if iso:
-            # Le premier motif (« du <date> ») est le plus sûr.
-            confidence = 0.95 if rank == 0 else max(0.60, 0.90 - 0.15 * rank)
-            return iso, confidence, match.group(0).strip()
-    return None, 0.0, ""
+            return iso, rank, match.group(0).strip()
+    return None, -1, ""
+
+
+def detect_date(
+    text: str,
+    profile: JurisdictionProfile | None,
+    number: Optional[str] = None,
+) -> tuple[Optional[str], float, str]:
+    """Repère la date de signature du texte.
+
+    Un texte cite les dates d'autres textes (« modifiant la loi n° 2022-09 du
+    27 juin 2022 »). La date propre du document est celle de son **intitulé**.
+    Lorsque le numéro officiel est connu, on cherche donc d'abord dans la ligne
+    qui le porte ; à défaut seulement, on élargit au reste de l'en-tête, avec
+    une confiance réduite et une preuve qui le dit.
+
+    Returns:
+        ``(date_iso, confiance, preuve)``.
+    """
+    patterns = profile.date_patterns if profile else []
+    if not patterns:
+        return None, 0.0, ""
+
+    if number:
+        for line in text.split("\n"):
+            segment = _own_heading_segment(line, number)
+            if segment is None:
+                continue
+            iso, rank, evidence = _search_date(segment, patterns)
+            if iso:
+                # Date trouvée dans l'intitulé propre : c'est la plus fiable.
+                return iso, 0.95 if rank == 0 else 0.88, evidence
+
+    # Hors intitulé, on écarte d'abord les visas : « Vu la loi n° 90-32 du
+    # 11 décembre 1990 » figure dans presque tous les textes béninois, et sa
+    # date était retenue comme celle du document.
+    hors_visas = strip_citation_lines(text)
+    iso, rank, evidence = _search_date(hors_visas, patterns)
+    depuis_visa = False
+    if not iso:
+        iso, rank, evidence = _search_date(text, patterns)
+        depuis_visa = True
+    if not iso:
+        return None, 0.0, ""
+
+    if number or depuis_visa:
+        # Hors intitulé : la date pourrait être celle d'un texte cité.
+        mention = "visa — à vérifier" if depuis_visa else "hors intitulé — à vérifier"
+        return iso, 0.40 if depuis_visa else 0.55, f"{evidence} ({mention})"
+    confidence = 0.95 if rank == 0 else max(0.60, 0.90 - 0.15 * rank)
+    return iso, confidence, evidence
 
 
 def detect_number(text: str, profile: JurisdictionProfile | None) -> tuple[Optional[str], float, str]:
@@ -183,8 +351,11 @@ def detect_number(text: str, profile: JurisdictionProfile | None) -> tuple[Optio
     for rank, pattern in enumerate(profile.number_patterns if profile else []):
         match = pattern.search(text)
         if match:
-            number = re.sub(r"\s+", "", match.group("number"))
-            number = number.replace("–", "-")
+            # Normalisation appliquée ici aussi, et pas seulement au nettoyage :
+            # `detect_number` doit rester correct sur du texte brut. Elle corrige
+            # au passage les chiffres confondus par l'OCR (« 2018-OO1 »), ce qui
+            # n'est sûr que parce qu'on est dans un numéro déjà reconnu.
+            number = normalize_ocr_number(match.group("number"))
             return number, 0.92 if rank == 0 else 0.75, match.group(0).strip()
     return None, 0.0, ""
 
@@ -285,7 +456,7 @@ def detect_title(
     for line in lines[:12]:
         if len(line) < 12 or line.isdigit():
             continue
-        if re.match(r"^r[ée]publique\s+du\b", line, re.IGNORECASE):
+        if _BOILERPLATE_LINE_RE.match(line):
             continue
         return _tidy_title(line), 0.40, "première ligne substantielle"
 
@@ -386,21 +557,45 @@ def extract_metadata(
         if evidence:
             metadata.evidence[field] = evidence
 
+    # Un texte réglementaire s'ouvre sur ses **visas**, qui citent d'autres
+    # textes avec leurs types, numéros et dates. Toutes les métadonnées sont
+    # donc cherchées d'abord dans le document débarrassé de ces citations ; le
+    # repli sur le texte complet reste possible, mais à confiance réduite et
+    # avec une preuve qui le signale.
+    own_text = strip_citation_lines(text)
+
     doc_type, type_conf, type_evidence = detect_document_type(
-        text,
+        own_text,
         profile,
         category=source.category if source else "autres",
         filename=source.filename if source else "",
     )
+    if doc_type is DocumentType.INCONNU:
+        doc_type, type_conf, type_evidence = detect_document_type(
+            text,
+            profile,
+            category=source.category if source else "autres",
+            filename=source.filename if source else "",
+        )
+        if doc_type is not DocumentType.INCONNU and type_conf > 0.45:
+            type_conf, type_evidence = 0.45, f"{type_evidence} (visa — à vérifier)"
     record("type", doc_type, type_conf, type_evidence)
 
-    number, number_conf, number_evidence = detect_number(text, profile)
+    number, number_conf, number_evidence = detect_number(own_text, profile)
+    if number is None:
+        number, number_conf, number_evidence = detect_number(text, profile)
+        if number:
+            number_conf = 0.40
+            number_evidence = f"{number_evidence} (visa — à vérifier)"
     record("number", number, number_conf, number_evidence)
 
-    date_iso, date_conf, date_evidence = detect_date(text, profile)
+    # Le numéro est détecté avant la date : il sert à localiser l'intitulé.
+    date_iso, date_conf, date_evidence = detect_date(text, profile, number)
     record("date", date_iso, date_conf, date_evidence)
 
-    title, title_conf, title_evidence = detect_title(text, doc_type, number)
+    title, title_conf, title_evidence = detect_title(own_text, doc_type, number)
+    if not title:
+        title, title_conf, title_evidence = detect_title(text, doc_type, number)
     record("title", title, title_conf, title_evidence)
 
     authority, authority_conf, authority_evidence = detect_authority(text, profile)

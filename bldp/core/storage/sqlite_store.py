@@ -34,16 +34,25 @@ from typing import Any, Iterable, Iterator, Optional, Sequence
 
 from bldp.logging_setup import get_logger
 from bldp.models import (
+    Alinea,
     Article,
     Chunk,
     Document,
     DocumentMetadata,
     DocumentType,
     DuplicateLink,
+    ExtractionMethod,
+    ExtractionResult,
     LegalRelation,
     LegalStatus,
     Page,
+    PdfAnalysis,
+    QualityIssue,
     QualityReport,
+    QualityStatus,
+    RelationType,
+    SourceFile,
+    StructureLevel,
     StructureNode,
     ValidationStatus,
 )
@@ -800,6 +809,212 @@ class LegalDatabase:
                 for issue in report.issues
             ],
         )
+
+
+def load_document(database: "LegalDatabase", document_id: str) -> Optional[Document]:
+    """Reconstruit un :class:`Document` complet depuis la base.
+
+    Restaure **tout** ce qui a été persisté — pages, structure, articles,
+    alinéas, relations, doublons, qualité, validation. Une reconstruction
+    partielle serait un piège : les exports régénérés depuis la base
+    perdraient silencieusement la hiérarchie et les relations juridiques.
+    """
+    row = database.get_document_row(document_id)
+    if row is None:
+        return None
+
+    source = SourceFile(
+        document_id=document_id,
+        source_path=row["source_path"] or "",
+        filename=row["filename"] or f"{document_id}.pdf",
+        extension=Path(row["filename"] or ".pdf").suffix or ".pdf",
+        size_bytes=row["size_bytes"] or 0,
+        file_hash=row["file_hash"] or "",
+        ingested_at=row["retrieved_at"] or "",
+        category=row["category"] or "autres",
+        raw_path=row["raw_path"],
+    )
+
+    pages = [
+        Page(
+            document_id=document_id,
+            page=page["page"],
+            text=page["text"] or "",
+            source_file=page["source_file"] or source.filename,
+            raw_text=page["raw_text"],
+            char_count=page["char_count"] or 0,
+            method=ExtractionMethod(page["method"])
+            if page["method"]
+            else ExtractionMethod.NATIVE,
+            ocr_confidence=page["ocr_confidence"],
+            warnings=json.loads(page["warnings_json"] or "[]"),
+        )
+        for page in database.get_pages(document_id)
+    ]
+
+    structure = [
+        StructureNode(
+            node_id=node["node_id"],
+            document_id=document_id,
+            level=StructureLevel(node["level"]),
+            number=node["number"],
+            label=node["label"] or "",
+            heading=node["heading"],
+            page=node["page"] or 0,
+            char_start=node["char_start"] or 0,
+            char_end=node["char_end"] or 0,
+            parent_id=node["parent_id"],
+            depth=node["depth"] or 0,
+            path=json.loads(node["path_json"] or "[]"),
+        )
+        for node in database.get_structure(document_id)
+    ]
+
+    articles = [
+        Article(
+            article_id=article["article_id"],
+            document_id=document_id,
+            article_number=article["article_number"],
+            text=article["text"] or "",
+            label=article["label"] or "",
+            position=article["position"] or 0,
+            page_start=article["page_start"] or 0,
+            page_end=article["page_end"] or 0,
+            char_start=article["char_start"] or 0,
+            char_end=article["char_end"] or 0,
+            partie=article["partie"],
+            livre=article["livre"],
+            title=article["title"],
+            subtitle=article["subtitle"],
+            chapter=article["chapter"],
+            section=article["section"],
+            subsection=article["subsection"],
+            annexe=article["annexe"],
+            hierarchy_path=json.loads(article["hierarchy_json"] or "[]"),
+            numeric_value=article["numeric_value"],
+            source_file=article["source_file"] or source.filename,
+            warnings=json.loads(article["warnings_json"] or "[]"),
+            alineas=[
+                Alinea(index=a["idx"], text=a["text"] or "", number=a["number"])
+                for a in database.get_alineas(article["article_id"])
+            ],
+        )
+        for article in database.get_articles(document_id)
+    ]
+
+    relations = [
+        LegalRelation(
+            relation_id=relation["relation_id"],
+            source_document_id=relation["source_document_id"],
+            relation=RelationType(relation["relation"]),
+            target_reference=relation["target_reference"] or "",
+            target_document_id=relation["target_document_id"],
+            confidence=relation["confidence"] or 0.0,
+            needs_review=bool(relation["needs_review"]),
+            article_id=relation["article_id"],
+            page=relation["page"],
+            excerpt=relation["excerpt"] or "",
+        )
+        for relation in database.connection.execute(
+            "SELECT * FROM relations WHERE source_document_id = ?", (document_id,)
+        )
+    ]
+
+    duplicates = [
+        DuplicateLink(
+            document_id=document_id,
+            duplicate_of=link["duplicate_of"],
+            kind=link["kind"],
+            similarity=link["similarity"] or 1.0,
+            details=link["details"] or "",
+        )
+        for link in database.connection.execute(
+            "SELECT * FROM duplicates WHERE document_id = ?", (document_id,)
+        )
+    ]
+
+    quality_row = database.get_quality(document_id)
+    quality = None
+    if quality_row:
+        issues = [
+            QualityIssue(
+                code=issue["code"],
+                severity=issue["severity"] or "info",
+                message=issue["message"] or "",
+                page=issue["page"],
+                article_id=issue["article_id"],
+                count=issue["count"] or 1,
+            )
+            for issue in database.connection.execute(
+                "SELECT * FROM quality_issues WHERE document_id = ?", (document_id,)
+            )
+        ]
+        quality = QualityReport(
+            document_id=document_id,
+            score=quality_row["score"] or 0.0,
+            ocr_quality=quality_row["ocr_quality"],
+            text_quality=quality_row["text_quality"] or 0.0,
+            structure_quality=quality_row["structure_quality"] or 0.0,
+            pages=quality_row["pages"] or 0,
+            empty_pages=quality_row["empty_pages"] or 0,
+            duplicate_pages=quality_row["duplicate_pages"] or 0,
+            missing_pages=quality_row["missing_pages"] or 0,
+            articles_detected=quality_row["articles_detected"] or 0,
+            numbering_gaps=json.loads(quality_row["numbering_json"] or "[]"),
+            possible_errors=quality_row["possible_errors"] or 0,
+            status=QualityStatus(quality_row["status"])
+            if quality_row["status"]
+            else QualityStatus.OK,
+            issues=issues,
+        )
+
+    analysis = None
+    if row["ocr_required"] is not None:
+        analysis = PdfAnalysis(
+            document_id=document_id,
+            pages=row["page_count"] or len(pages),
+            size_bytes=row["size_bytes"] or 0,
+            has_text=bool(pages and any(p.text.strip() for p in pages)),
+            ocr_required=bool(row["ocr_required"]),
+            confidence=0.0,
+            reasons=["reconstruit depuis la base : justification non persistée"],
+        )
+
+    return Document(
+        document_id=document_id,
+        source=source,
+        metadata=rebuild_metadata(row),
+        analysis=analysis,
+        extraction=ExtractionResult(
+            document_id=document_id,
+            source_file=source.filename,
+            method=ExtractionMethod(row["extraction_method"])
+            if row["extraction_method"]
+            else ExtractionMethod.NATIVE,
+            pages=pages,
+        ),
+        structure=structure,
+        articles=articles,
+        relations=relations,
+        duplicates=duplicates,
+        quality=quality,
+        validation=ValidationStatus(row["validation"] or "en_attente"),
+        validation_note=row["validation_note"] or "",
+        text_hash=row["text_hash"],
+        processed_at=row["processed_at"],
+        pipeline_version=row["pipeline_version"] or "",
+        errors=json.loads(row["errors_json"] or "[]"),
+    )
+
+
+def load_documents(database: "LegalDatabase") -> list[Document]:
+    """Reconstruit tout le corpus enregistré."""
+    documents = []
+    for row in database.list_documents():
+        document = load_document(database, row["document_id"])
+        if document is not None:
+            documents.append(document)
+    return documents
 
 
 def rebuild_metadata(row: sqlite3.Row) -> DocumentMetadata:

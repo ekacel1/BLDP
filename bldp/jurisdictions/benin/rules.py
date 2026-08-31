@@ -16,6 +16,7 @@ import re
 
 from bldp.core.parser.rules import NUMBER, RuleSet, StructureRule
 from bldp.jurisdictions.registry import JurisdictionProfile
+from bldp.utils import DASH_CLASS, DASHES, NUMERO_PREFIX, OCR_DIGIT
 from bldp.models import StructureLevel
 
 _FLAGS = re.IGNORECASE | re.UNICODE
@@ -37,6 +38,7 @@ ARTICLE_NOUVEAU = StructureRule(
     priority=75,   # prioritaire sur la règle générique d'article
     name="benin_article_nouveau",
     max_line_length=400,
+    content_is_body=True,
 )
 
 #: « Article unique » — fréquent dans les décrets courts.
@@ -49,14 +51,20 @@ ARTICLE_UNIQUE = StructureRule(
     priority=76,
     name="benin_article_unique",
     max_line_length=400,
+    content_is_body=True,
 )
 
 #: Fin de la partie normative : formules de promulgation béninoises.
 BENIN_STOP_PATTERNS = [
     re.compile(r"^\s*fait\s+[àa]\s+cotonou", _FLAGS),
     re.compile(r"^\s*fait\s+[àa]\s+porto[-\s]novo", _FLAGS),
-    re.compile(r"la\s+présente\s+loi\s+sera\s+ex[ée]cut[ée]e\s+comme\s+loi\s+de\s+l['’]?[ée]tat",
-               _FLAGS),
+    # Accents optionnels : l'OCR les perd fréquemment sur les scans anciens.
+    # Cette formule n'agit comme clôture que si elle n'est pas elle-même un
+    # article numéroté — au Bénin, elle l'est presque toujours.
+    re.compile(
+        r"la\s+pr[ée]sente\s+loi\s+sera\s+ex[ée]cut[ée]e\s+comme\s+loi\s+de\s+l['’]?[ée]tat",
+        _FLAGS,
+    ),
     re.compile(r"^\s*par\s+le\s+pr[ée]sident\s+de\s+la\s+r[ée]publique", _FLAGS),
 ]
 
@@ -78,27 +86,47 @@ BENIN_TOC_PATTERNS = [
 #: jurisprudence, et non du type générique « décision », dont le motif est
 #: volontairement placé en dernier.
 DOCUMENT_TYPE_PATTERNS: dict[str, list[re.Pattern[str]]] = {
-    "constitution": [re.compile(r"\bconstitution\s+de\s+la\s+r[ée]publique\s+du\s+b[ée]nin\b", _FLAGS)],
+    # « portant Constitution de la République du Bénin » désigne **toujours** la
+    # loi 90-32, citée dans les visas de presque tous les textes béninois. Le
+    # motif est donc ancré en début de ligne : seule une véritable Constitution
+    # s'intitule ainsi. Sans cet ancrage, 13 documents sur 24 étaient typés
+    # « constitution » à cause de leurs visas.
+    "constitution": [
+        re.compile(
+            r"^\s*constitution\s+de\s+la\s+r[ée]publique\s+du\s+b[ée]nin\b",
+            _FLAGS | re.MULTILINE,
+        )
+    ],
     "loi": [
-        re.compile(r"\bloi\s+(?:organique\s+)?n\s*[°ºo]\s*\d{4}\s*[-–]\s*\d{1,3}\b", _FLAGS),
-        re.compile(r"^\s*loi\s+n\s*[°ºo]", _FLAGS | re.MULTILINE),
+        re.compile(rf"\bloi\s+(?:organique\s+){{0,1}}{NUMERO_PREFIX}{OCR_DIGIT}{{4}}", _FLAGS),
+        re.compile(rf"^\s*loi\s+{NUMERO_PREFIX}", _FLAGS | re.MULTILINE),
     ],
     "code": [
         re.compile(r"\bcode\s+(?:du|de|des|d['’])\s*\w+", _FLAGS),
         re.compile(r"^\s*code\s+", _FLAGS | re.MULTILINE),
     ],
-    "decret": [re.compile(r"\bd[ée]cret\s+n\s*[°ºo]\s*\d{4}\s*[-–]\s*\d{1,4}\b", _FLAGS)],
+    # « DÉGRET », « DEGRET » : l'OCR confond régulièrement C et G sur ces scans.
+    "decret": [re.compile(rf"\bd[ée][cgq]ret\s*{NUMERO_PREFIX}{OCR_DIGIT}{{4}}", _FLAGS)],
     "arrete": [
-        re.compile(r"\barr[êe]t[ée]\s+(?:interminist[ée]riel\s+)?n\s*[°ºo]", _FLAGS)
+        re.compile(
+            rf"\barr[êeé]t[ée]\s+(?:interminist[ée]riel\s+)?{NUMERO_PREFIX}", _FLAGS
+        )
     ],
-    "ordonnance": [re.compile(r"\bordonnance\s+n\s*[°ºo]", _FLAGS)],
-    "circulaire": [re.compile(r"\bcirculaire\s+n\s*[°ºo]", _FLAGS)],
+    "ordonnance": [re.compile(rf"\bordonnance\s*{NUMERO_PREFIX}", _FLAGS)],
+    "circulaire": [re.compile(rf"\bcirculaire\s*{NUMERO_PREFIX}", _FLAGS)],
     # Émanant d'une juridiction : jurisprudence, quelle que soit l'appellation
     # de l'acte (arrêt, décision DCC...).
+    # La juridiction doit être l'**émetteur**, pas une mention au fil du texte.
+    # « proclamation par la Cour constitutionnelle des résultats » figure dans
+    # le corps de nombreux décrets : sans ancrage en début de ligne, ils étaient
+    # typés « jurisprudence ».
     "jurisprudence": [
-        re.compile(r"\bcour\s+(?:constitutionnelle|supr[êe]me|d['’]appel)\b", _FLAGS),
-        re.compile(r"\btribunal\s+(?:de\s+premi[èe]re\s+instance|de\s+commerce)\b", _FLAGS),
-        re.compile(r"\barr[êe]t\s+n\s*[°ºo]", _FLAGS),
+        re.compile(
+            r"^\s*(?:cour\s+(?:constitutionnelle|supr[êe]me|d['’]appel)"
+            r"|tribunal\s+(?:de\s+premi[èe]re\s+instance|de\s+commerce))\b",
+            _FLAGS | re.MULTILINE,
+        ),
+        re.compile(rf"\barr[êe]t\s*{NUMERO_PREFIX}{OCR_DIGIT}", _FLAGS),
         re.compile(r"\bd[ée]cision\s+dcc\b", _FLAGS),
     ],
     # Repli le plus large : à ne consulter qu'après tous les types précédents.
@@ -120,12 +148,37 @@ AUTHORITY_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     ],
 }
 
-#: Numéro officiel : « n° 2026-001 », « N° 2020-113/PR/MTFP ».
+#: Séparateur d'un numéro officiel : tout tiret Unicode, l'underscore ou le
+#: point, seuls ou combinés (« 2010.- 028 » se rencontre sur des scans bruités).
+_NUM_SEP = f"[{re.escape(DASHES + '_.')}]{{1,3}}"
+
+#: Le numéro ne doit pas se terminer **au milieu d'un mot**.
+#:
+#: Sans ce garde-fou, « N"2olo.- Oü8 » — où l'OCR a détruit le « 2 » de 028 —
+#: produisait « 2010-0 » avec 0,92 de confiance : un numéro faux, annoncé comme
+#: sûr. Le refus de capturer renvoie le document vers la validation humaine,
+#: ce qui est le comportement voulu (§33).
+_NOT_TRUNCATED = r"(?!\w)"
+
+#: Numéro officiel : « n° 2026-313 », « N° 2020-113/PR/MTFP ».
+#:
+#: Deux tolérances tirées de scans réels : le symbole « ° » que l'OCR rend par
+#: une apostrophe ou un guillemet (:data:`NUMERO_PREFIX`), et les lettres lues
+#: à la place de chiffres (:data:`OCR_DIGIT`). Sans elles, aucun numéro n'était
+#: reconnu — et sans numéro, la date et le type dérivaient vers les visas.
 NUMBER_PATTERNS = [
+    # Millésime + série : « n° 2026-313 », « N" 2019 _ 230 », « N'2010-01 ».
     re.compile(
-        r"\bn\s*[°ºo]\s*(?P<number>\d{4}\s*[-–]\s*\d{1,4}(?:\s*/\s*[A-Z0-9./-]+)?)", _FLAGS
+        rf"{NUMERO_PREFIX}(?P<number>{OCR_DIGIT}{{4}}\s*{_NUM_SEP}\s*{OCR_DIGIT}{{1,4}}"
+        rf"(?:\s*/\s*[A-Z0-9./-]+)?){_NOT_TRUNCATED}",
+        _FLAGS,
     ),
-    re.compile(r"\bn\s*[°ºo]\s*(?P<number>\d{1,4}\s*[-–]\s*\d{2,4})", _FLAGS),
+    # Forme courte : « n° 90-32 ».
+    re.compile(
+        rf"{NUMERO_PREFIX}(?P<number>{OCR_DIGIT}{{1,4}}\s*{_NUM_SEP}\s*{OCR_DIGIT}{{2,4}})"
+        rf"{_NOT_TRUNCATED}",
+        _FLAGS,
+    ),
 ]
 
 #: Date de signature : « du 10 février 2026 ».

@@ -30,6 +30,7 @@ from typing import Iterable, Sequence
 from bldp.config import Config
 from bldp.logging_setup import get_logger
 from bldp.models import Page
+from bldp.utils import normalize_number_dashes
 
 logger = get_logger("cleaning")
 
@@ -114,6 +115,11 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # « Artic1e 45 », « ArticIe 45 » -> « Article 45 »
     (re.compile(r"\bArtic[l1I|]e\b"), "Article"),
     (re.compile(r"\bArtic[l1I|][e3]\b"), "Article"),
+    # Variantes relevées sur des scans réels : le « l » lu « t » ou « d », le
+    # « l » perdu. Liste **explicite** plutôt qu'un motif large : un mot-clé
+    # trop permissif transformerait du texte courant en en-tête d'article.
+    (re.compile(r"\bArti(?:cte|de|cie|clc|cle\.|ele)\b"), "Article"),
+    (re.compile(r"\bARTI(?:CTE|DE|CIE|CLC|ELE)\b"), "ARTICLE"),
     # « ARTICI E » -> « ARTICLE »
     (re.compile(r"\bARTIC[L1I|]\s?E\b"), "ARTICLE"),
     # Zéro/O au milieu d'un nombre : « 2O26 » -> « 2026 »
@@ -146,6 +152,7 @@ class CleaningReport:
     removed_page_numbers: int = 0
     removed_decorative_lines: int = 0
     joined_hyphenations: int = 0
+    rejoined_article_headers: int = 0
     joined_wrapped_lines: int = 0
     ocr_corrections: int = 0
     control_chars_removed: int = 0
@@ -176,6 +183,7 @@ class CleaningReport:
             "removed_page_numbers": self.removed_page_numbers,
             "removed_decorative_lines": self.removed_decorative_lines,
             "joined_hyphenations": self.joined_hyphenations,
+            "rejoined_article_headers": self.rejoined_article_headers,
             "joined_wrapped_lines": self.joined_wrapped_lines,
             "ocr_corrections": self.ocr_corrections,
             "control_chars_removed": self.control_chars_removed,
@@ -214,6 +222,10 @@ def normalize_unicode(text: str) -> str:
     text = text.translate(_ZERO_WIDTH).translate(_SPACE_VARIANTS)
     for source, replacement in _PUNCT_NORMALISATION.items():
         text = text.replace(source, replacement)
+    # Les tirets **entre chiffres** sont des séparateurs de numérotation : les
+    # ramener au trait d'union rend « n° 2025 — 18 » reconnaissable. Les tirets
+    # d'incise, eux, restent intacts (voir normalize_number_dashes).
+    text = normalize_number_dashes(text)
     return unicodedata.normalize("NFC", text)
 
 
@@ -236,6 +248,105 @@ def fix_hyphenation(text: str) -> tuple[str, int]:
         return left + right
 
     return HYPHENATION_RE.sub(_join, text), count
+
+
+#: En-tête d'article **incomplet**, c'est-à-dire réduit au mot-clé, ou au
+#: mot-clé et au numéro, sans le contenu qui devrait suivre.
+INCOMPLETE_ARTICLE_HEADER_RE = re.compile(
+    r"^\s*(?:article|art\.?)"
+    r"(?:\s*\d{1,4}(?:\s*[-–—]\s*\d{1,4})?(?:\s*(?:er|bis|ter|nouveau))?)?"
+    r"\s*:?\s*$",
+    re.IGNORECASE,
+)
+
+#: Début plausible de la suite d'un en-tête éclaté : un numéro, ou le
+#: deux-points isolé qui le suit.
+_HEADER_CONTINUATION_RE = re.compile(
+    r"^\s*(?::|\d{1,4}|[IVXLCDM]{1,7}\b|premier|1\s*er)", re.IGNORECASE
+)
+
+#: En-tête **exploitable** par le parser : le mot-clé suivi d'un numéro.
+#: Le contenu peut rester sur les lignes suivantes — le parser sait le
+#: rattacher. Il suffit donc de reconstituer « Article 88 : ».
+_USABLE_ARTICLE_HEADER_RE = re.compile(
+    r"^\s*(?:article|art\.?)\s*(?:\d{1,4}|[IVXLCDM]{1,7}\b|premier|1\s*er)",
+    re.IGNORECASE,
+)
+
+#: Nombre maximal de lignes recollées pour reconstituer un seul en-tête.
+_MAX_HEADER_MERGES = 3
+
+
+def rejoin_split_article_headers(text: str) -> tuple[str, int]:
+    """Recolle les en-têtes d'article éclatés par l'OCR.
+
+    Sur des scans réels, Tesseract rend fréquemment ::
+
+        Article
+        88
+        :
+
+    au lieu de « Article 88 : ». Le parser, qui raisonne ligne par ligne, ne
+    reconnaissait alors pas l'article — et celui-ci **disparaissait du corpus
+    sans avertissement**. Le recollage général (:func:`join_wrapped_lines`) ne
+    règle pas le cas : il refuse de joindre une ligne commençant par un
+    chiffre, précisément pour ne pas avaler un numéro de page.
+
+    La règle est volontairement étroite : on ne joint que si la ligne courante
+    est un en-tête d'article *incomplet* et que la suivante en est la
+    continuation plausible (un numéro, ou le deux-points). Au plus trois
+    fusions, pour ne jamais absorber un paragraphe entier.
+
+    Returns:
+        ``(texte, nombre_d_en-têtes_reconstitués)``.
+    """
+    lines = text.split("\n")
+    output: list[str] = []
+    rejoined = 0
+    index = 0
+
+    while index < len(lines):
+        current = lines[index].strip()
+        if not current or not INCOMPLETE_ARTICLE_HEADER_RE.match(current):
+            output.append(lines[index])
+            index += 1
+            continue
+
+        merged = current
+        lookahead = index + 1
+        merges = 0
+        while (
+            lookahead < len(lines)
+            and merges < _MAX_HEADER_MERGES
+            and INCOMPLETE_ARTICLE_HEADER_RE.match(merged)
+        ):
+            candidate = lines[lookahead].strip()
+            if not candidate:
+                lookahead += 1
+                continue
+            if not _HEADER_CONTINUATION_RE.match(candidate):
+                break
+            # Le deux-points se colle au numéro ; le reste prend une espace.
+            separator = "" if candidate.startswith(":") else " "
+            merged = f"{merged}{separator}{candidate}"
+            lookahead += 1
+            merges += 1
+
+        # Succès dès que l'en-tête porte un numéro : « Article 88 : » suffit au
+        # parser, qui rattachera le corps resté sur les lignes suivantes.
+        became_usable = _USABLE_ARTICLE_HEADER_RE.match(
+            merged
+        ) and not _USABLE_ARTICLE_HEADER_RE.match(current)
+
+        if merges and became_usable:
+            output.append(merged)
+            rejoined += 1
+            index = lookahead
+        else:
+            output.append(lines[index])
+            index += 1
+
+    return "\n".join(output), rejoined
 
 
 def join_wrapped_lines(text: str) -> tuple[str, int]:
@@ -418,6 +529,12 @@ def clean_page_text(
     if section.get("fix_hyphenation", True):
         text, joined = fix_hyphenation(text)
         report.joined_hyphenations += joined
+    if section.get("rejoin_article_headers", True):
+        # Appliqué **avant** la suppression des numéros de page : un « 88 »
+        # isolé, seconde ligne d'un en-tête éclaté, serait sinon confondu avec
+        # une pagination et supprimé.
+        text, rejoined = rejoin_split_article_headers(text)
+        report.rejoined_article_headers += rejoined
 
     top = set(repeated_top)
     bottom = set(repeated_bottom)

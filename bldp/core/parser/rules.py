@@ -59,7 +59,11 @@ NUMBER = (
 )
 
 #: Séparateur entre le numéro et l'intitulé : « : », « . », « - » ou rien.
-SEPARATOR = r"(?:\s*[:.\-–—]\s*|\s+|$)"
+#:
+#: Les guillemets et apostrophes en font partie : l'OCR rend « Article 1er »
+#: par ``Article 1"'`` sur les scans bruités. Sans eux, l'article premier de
+#: plusieurs documents n'était pas reconnu du tout.
+SEPARATOR = r"(?:\s*[:.\-–—\"'’`´,;°]+\s*|\s+|$)"
 
 #: Intitulé optionnel qui suit le numéro sur la même ligne.
 HEADING = r"(?P<heading>.*)"
@@ -101,14 +105,34 @@ class StructureRule:
     requires_uppercase_line: bool = False
     max_line_length: int = 200
     name: str = ""
+    content_is_body: bool = False
 
     def match(self, line: str) -> Optional[re.Match[str]]:
-        """Teste la règle sur une ligne déjà débarrassée de ses espaces."""
-        if not line or len(line) > self.max_line_length:
+        """Teste la règle sur une ligne déjà débarrassée de ses espaces.
+
+        ``max_line_length`` empêche de prendre un paragraphe pour un titre.
+        Pour un **article**, en revanche, ce qui suit le numéro n'est pas un
+        intitulé mais le contenu normatif lui-même, qui peut légitimement être
+        très long une fois les retours à la ligne recollés. Appliquer la limite
+        à la ligne entière faisait alors disparaître l'article du corpus.
+        Avec ``content_is_body``, la limite ne porte donc que sur le **préfixe**
+        (« Article 38 : »), ce qui préserve l'intention du garde-fou sans
+        jamais perdre de texte.
+        """
+        if not line:
+            return None
+        if not self.content_is_body and len(line) > self.max_line_length:
             return None
         if self.requires_uppercase_line and not _is_upper_line(line):
             return None
-        return self.pattern.match(line)
+
+        found = self.pattern.match(line)
+        if found is None or not self.content_is_body:
+            return found
+
+        start = found.start("heading") if "heading" in found.groupdict() else -1
+        prefix_length = start if start >= 0 else len(line)
+        return found if prefix_length <= self.max_line_length else None
 
 
 def _is_upper_line(line: str) -> bool:
@@ -139,6 +163,7 @@ class RuleSet:
     article_rules: list[StructureRule] = field(default_factory=list)
     alinea_pattern: Optional[Pattern[str]] = None
     stop_patterns: list[Pattern[str]] = field(default_factory=list)
+    never_stop_patterns: list[Pattern[str]] = field(default_factory=list)
     toc_patterns: list[Pattern[str]] = field(default_factory=list)
 
     def all_rules(self) -> list[StructureRule]:
@@ -156,7 +181,14 @@ class RuleSet:
         return None
 
     def is_stop_line(self, line: str) -> bool:
-        """Vrai si la ligne marque la fin de la partie normative."""
+        """Vrai si la ligne marque la fin de la partie normative.
+
+        Les motifs de :attr:`never_stop_patterns` ont priorité : une formule
+        d'ouverture ne doit jamais être confondue avec une clôture, sous peine
+        de faire disparaître tout le corps du texte.
+        """
+        if any(pattern.search(line) for pattern in self.never_stop_patterns):
+            return False
         return any(pattern.search(line) for pattern in self.stop_patterns)
 
     def is_toc_line(self, line: str) -> bool:
@@ -177,6 +209,7 @@ class RuleSet:
             article_rules=[*self.article_rules, *other.article_rules],
             alinea_pattern=other.alinea_pattern or self.alinea_pattern,
             stop_patterns=[*self.stop_patterns, *other.stop_patterns],
+            never_stop_patterns=[*self.never_stop_patterns, *other.never_stop_patterns],
             toc_patterns=[*self.toc_patterns, *other.toc_patterns],
         )
 
@@ -241,6 +274,7 @@ GENERIC_ARTICLE_RULES: list[StructureRule] = [
         priority=80,
         name="article",
         max_line_length=400,
+        content_is_body=True,
     ),
     # Article en tête de ligne suivi immédiatement du texte, sans séparateur :
     # « Article 45 Le salarié... ». Motif distinct pour rester lisible.
@@ -252,6 +286,7 @@ GENERIC_ARTICLE_RULES: list[StructureRule] = [
         priority=85,
         name="article_majuscules",
         max_line_length=400,
+        content_is_body=True,
     ),
 ]
 
@@ -260,17 +295,31 @@ GENERIC_ALINEA_PATTERN = re.compile(
     r"^\s*(?P<number>\d{1,3}\s*[°)\-.]|[a-z]\s*[)\-.]|[-–—•])\s+(?=\S)", re.UNICODE
 )
 
-#: Fin de la partie normative : formules de signature et de promulgation.
+#: Fin de la partie normative : formules de **signature**.
 #: Les accents sont rendus optionnels : l'OCR les perd fréquemment, et une
 #: formule de signature non reconnue ferait rentrer des mentions parasites
 #: (« Article 99 » d'un tampon, d'une annexe non normative) dans le corpus.
+#:
+#: Attention : « Par le Président de la République » clôt un texte, mais
+#: « Le Président de la République promulgue la loi… » l'**ouvre**. Seule la
+#: première forme figure ici ; la seconde est explicitement protégée par
+#: :data:`GENERIC_NEVER_STOP_PATTERNS`.
 GENERIC_STOP_PATTERNS = [
     re.compile(r"^\s*fait\s+[àa]\s+.{2,40}\s*,?\s*le\s+", _FLAGS),
-    re.compile(
-        r"^\s*(?:ainsi\s+fait|par\s+le\s+pr[ée]sident"
-        r"|le\s+pr[ée]sident\s+de\s+la\s+r[ée]publique)",
-        _FLAGS,
-    ),
+    re.compile(r"^\s*(?:ainsi\s+fait|par\s+le\s+pr[ée]sident)", _FLAGS),
+]
+
+#: Formules qui **ressemblent** à une clôture mais ouvrent le texte.
+#:
+#: Un texte béninois commence par « Le Président de la République promulgue la
+#: loi dont la teneur suit : ». Prise pour une signature, cette ligne faisait
+#: disparaître **tous** les articles du document — le corpus ne contenait plus
+#: qu'un préambule. Ces motifs ont priorité sur toute règle d'arrêt.
+GENERIC_NEVER_STOP_PATTERNS = [
+    re.compile(r"\bpromulgue\b", _FLAGS),
+    re.compile(r"\bteneur\s+suit\b", _FLAGS),
+    re.compile(r"\ba\s+d[ée]lib[ée]r[ée]\s+et\s+adopt[ée]", _FLAGS),
+    re.compile(r"\bdont\s+la\s+teneur\b", _FLAGS),
 ]
 
 #: Lignes de sommaire : « Article 5 .......... 12 ».
@@ -288,6 +337,7 @@ def generic_ruleset() -> RuleSet:
         article_rules=list(GENERIC_ARTICLE_RULES),
         alinea_pattern=GENERIC_ALINEA_PATTERN,
         stop_patterns=list(GENERIC_STOP_PATTERNS),
+        never_stop_patterns=list(GENERIC_NEVER_STOP_PATTERNS),
         toc_patterns=list(GENERIC_TOC_PATTERNS),
     )
 

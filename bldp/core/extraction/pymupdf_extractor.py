@@ -72,10 +72,44 @@ def open_pdf(path: str | Path, password: str | None = None) -> Any:
     return document
 
 
+def page_text(page: Any, mode: str = DEFAULT_TEXT_MODE, sort_blocks: bool = True) -> str:
+    """Texte d'une page, blocs remis dans l'ordre de lecture si demandé.
+
+    Sur des documents numérisés, l'ordre des blocs stocké dans le PDF ne suit
+    pas toujours la lecture : les articles ressortaient dans le désordre
+    (« 21, 23, 24, 22 »), ce que le contrôle qualité signalait ensuite comme
+    autant de fausses ruptures de numérotation.
+
+    Le tri se fait **ici**, sur les blocs, et non via l'option ``sort=True`` de
+    PyMuPDF : celle-ci recolle les blocs sans séparateur et soude le dernier mot
+    de l'un au premier du suivant (« gouvernementvu »). Sur un corpus juridique
+    où « Vu » introduit les visas, cette soudure est une corruption de contenu.
+
+    Le tri par ``(y, x)`` suppose une mise en page à **une colonne**, ce qui est
+    le cas des textes officiels visés. Il est désactivable par configuration.
+    """
+    if not sort_blocks:
+        return page.get_text(mode) or ""
+
+    try:
+        blocks = page.get_text("blocks")
+    except Exception:
+        return page.get_text(mode) or ""
+
+    #: type 0 = texte, 1 = image ; on ignore les secondes.
+    textual = [b for b in blocks if len(b) > 6 and b[6] == 0 and (b[4] or "").strip()]
+    if not textual:
+        return page.get_text(mode) or ""
+
+    textual.sort(key=lambda b: (round(b[1], 1), round(b[0], 1)))
+    return "\n".join((b[4] or "").strip() for b in textual)
+
+
 def iter_page_texts(
     path: str | Path,
     mode: str = DEFAULT_TEXT_MODE,
     pages: Optional[list[int]] = None,
+    sort_blocks: bool = True,
 ) -> Iterator[tuple[int, str]]:
     """Itère sur ``(numero_de_page_1_based, texte_brut)``.
 
@@ -83,6 +117,7 @@ def iter_page_texts(
         path: chemin du PDF.
         mode: mode d'extraction PyMuPDF (``text``, ``blocks``, ``words``...).
         pages: numéros de page (1-based) à extraire ; ``None`` = toutes.
+        sort_blocks: remettre les blocs dans l'ordre de lecture.
     """
     document = open_pdf(path)
     try:
@@ -92,7 +127,7 @@ def iter_page_texts(
             if wanted is not None and page_number not in wanted:
                 continue
             try:
-                text = document.load_page(index).get_text(mode) or ""
+                text = page_text(document.load_page(index), mode, sort_blocks)
             except Exception as exc:  # une page abîmée ne stoppe pas le document
                 logger.warning("Page %d illisible dans %s : %s", page_number, path, exc)
                 text = ""
@@ -107,6 +142,7 @@ def extract_document(
     mode: str = DEFAULT_TEXT_MODE,
     pages: Optional[list[int]] = None,
     source_file: str | None = None,
+    sort_blocks: bool = True,
 ) -> ExtractionResult:
     """Extrait tout le texte natif d'un PDF.
 
@@ -120,6 +156,8 @@ def extract_document(
         mode: mode d'extraction PyMuPDF.
         pages: sous-ensemble de pages (1-based) ; ``None`` = tout le document.
         source_file: nom affiché comme source (défaut : nom du fichier).
+        sort_blocks: remettre les blocs dans l'ordre de lecture (cf.
+            :func:`page_text`).
 
     Returns:
         Le résultat d'extraction, méthode ``pymupdf``.
@@ -135,7 +173,9 @@ def extract_document(
     )
 
     empty_pages: list[int] = []
-    for page_number, raw_text in iter_page_texts(target, mode=mode, pages=pages):
+    for page_number, raw_text in iter_page_texts(
+        target, mode=mode, pages=pages, sort_blocks=sort_blocks
+    ):
         text = raw_text
         page = Page(
             document_id=document_id,

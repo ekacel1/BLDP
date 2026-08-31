@@ -213,6 +213,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_pipeline.add_argument(
         "--no-export", action="store_true", help="ne pas produire les exports"
     )
+    p_pipeline.add_argument(
+        "--resume",
+        action="store_true",
+        help="sauter les documents déjà traités avec succès (reprise d'un gros lot)",
+    )
+    p_pipeline.add_argument(
+        "--no-resume", action="store_true", help="tout retraiter, même le déjà fait"
+    )
+    p_pipeline.add_argument(
+        "--workers",
+        type=int,
+        metavar="N",
+        help="documents traités de front (0 = un par cœur)",
+    )
+    p_pipeline.add_argument(
+        "--keep-ocr",
+        choices=["all", "review", "none"],
+        help="rétention des PDF OCRisés : tout, seulement les documents à "
+        "vérifier, ou aucun",
+    )
     p_pipeline.set_defaults(func=cmd_pipeline)
 
     # -- process ------------------------------------------------------------
@@ -227,6 +247,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_process.add_argument("input", nargs="?", help="dossier ou PDF à traiter")
     p_process.add_argument("--limit", type=int, help="ne traiter que les N premiers documents")
+    p_process.add_argument(
+        "--resume", action="store_true", help="sauter les documents déjà traités"
+    )
+    p_process.add_argument(
+        "--workers", type=int, metavar="N", help="documents traités de front (0 = un par cœur)"
+    )
     p_process.set_defaults(func=cmd_process)
 
     # -- validate -----------------------------------------------------------
@@ -664,6 +690,15 @@ def _print_run_summary(result) -> None:
     print(f"    {report.failed:4d} en échec")
     if report.skipped_duplicates:
         print(f"    {report.skipped_duplicates:4d} doublon(s) signalé(s)")
+    if result.skipped_existing:
+        print(
+            f"    {len(result.skipped_existing):4d} déjà traité(s), ignoré(s) (--resume)"
+        )
+    if result.purged_ocr_pdfs:
+        print(
+            f"    {result.purged_ocr_pdfs:4d} PDF OCRisé(s) purgé(s) "
+            f"({result.purged_bytes / 1e6:.0f} Mo libérés)"
+        )
     print("=" * 64)
 
     for document in result.review_required:
@@ -696,6 +731,15 @@ def cmd_pipeline(args: argparse.Namespace, config: Config) -> int:
     elif args.no_embed:
         do_embeddings = False
 
+    resume: bool | None = None
+    if args.resume:
+        resume = True
+    elif args.no_resume:
+        resume = False
+
+    if args.keep_ocr:
+        config = config.with_overrides({"ocr": {"keep_sidecar_for": args.keep_ocr}})
+
     try:
         result = run_pipeline(
             source,
@@ -704,6 +748,8 @@ def cmd_pipeline(args: argparse.Namespace, config: Config) -> int:
             do_export=not args.no_export,
             do_embeddings=do_embeddings,
             progress=_progress_printer(args.quiet),
+            resume=resume,
+            workers=args.workers,
         )
     except LoaderError as exc:
         logger.error("%s", exc)
@@ -734,6 +780,8 @@ def cmd_process(args: argparse.Namespace, config: Config) -> int:
             config,
             limit=args.limit,
             progress=_progress_printer(args.quiet),
+            resume=args.resume or None,
+            workers=args.workers,
         )
     except LoaderError as exc:
         logger.error("%s", exc)
@@ -1011,8 +1059,10 @@ def cmd_export(args: argparse.Namespace, config: Config) -> int:
     if database is None:
         return EXIT_ERROR
 
+    from bldp.core.storage.sqlite_store import load_documents
+
     with database:
-        documents = _rebuild_documents(database)
+        documents = load_documents(database)
 
     if not documents:
         print("Aucun document en base à exporter.", file=sys.stderr)
@@ -1023,120 +1073,6 @@ def cmd_export(args: argparse.Namespace, config: Config) -> int:
     for name, path in sorted(produced.items()):
         print(f"  {name:22} {path}")
     return EXIT_OK
-
-
-def _rebuild_documents(database):
-    """Reconstruit des objets Document depuis la base, pour réexport."""
-    import json
-
-    from bldp.core.storage.sqlite_store import rebuild_metadata
-    from bldp.models import (
-        Alinea, Article, Document, ExtractionMethod, ExtractionResult, Page,
-        QualityReport, QualityStatus, SourceFile, ValidationStatus,
-    )
-
-    documents = []
-    for row in database.list_documents():
-        document_id = row["document_id"]
-        source = SourceFile(
-            document_id=document_id,
-            source_path=row["source_path"] or "",
-            filename=row["filename"] or f"{document_id}.pdf",
-            extension=".pdf",
-            size_bytes=row["size_bytes"] or 0,
-            file_hash=row["file_hash"] or "",
-            ingested_at=row["retrieved_at"] or "",
-            category=row["category"] or "autres",
-            raw_path=row["raw_path"],
-        )
-        pages = [
-            Page(
-                document_id=document_id,
-                page=page["page"],
-                text=page["text"] or "",
-                source_file=page["source_file"] or source.filename,
-                raw_text=page["raw_text"],
-                method=ExtractionMethod(page["method"]) if page["method"] else ExtractionMethod.NATIVE,
-                ocr_confidence=page["ocr_confidence"],
-                warnings=json.loads(page["warnings_json"] or "[]"),
-            )
-            for page in database.get_pages(document_id)
-        ]
-        articles = []
-        for article in database.get_articles(document_id):
-            articles.append(
-                Article(
-                    article_id=article["article_id"],
-                    document_id=document_id,
-                    article_number=article["article_number"],
-                    text=article["text"] or "",
-                    label=article["label"] or "",
-                    position=article["position"] or 0,
-                    page_start=article["page_start"] or 0,
-                    page_end=article["page_end"] or 0,
-                    char_start=article["char_start"] or 0,
-                    char_end=article["char_end"] or 0,
-                    title=article["title"],
-                    chapter=article["chapter"],
-                    section=article["section"],
-                    subsection=article["subsection"],
-                    annexe=article["annexe"],
-                    hierarchy_path=json.loads(article["hierarchy_json"] or "[]"),
-                    numeric_value=article["numeric_value"],
-                    source_file=article["source_file"] or source.filename,
-                    warnings=json.loads(article["warnings_json"] or "[]"),
-                    alineas=[
-                        Alinea(index=a["idx"], text=a["text"] or "", number=a["number"])
-                        for a in database.get_alineas(article["article_id"])
-                    ],
-                )
-            )
-
-        quality_row = database.get_quality(document_id)
-        quality = (
-            QualityReport(
-                document_id=document_id,
-                score=quality_row["score"] or 0.0,
-                ocr_quality=quality_row["ocr_quality"],
-                text_quality=quality_row["text_quality"] or 0.0,
-                structure_quality=quality_row["structure_quality"] or 0.0,
-                pages=quality_row["pages"] or 0,
-                empty_pages=quality_row["empty_pages"] or 0,
-                duplicate_pages=quality_row["duplicate_pages"] or 0,
-                missing_pages=quality_row["missing_pages"] or 0,
-                articles_detected=quality_row["articles_detected"] or 0,
-                numbering_gaps=json.loads(quality_row["numbering_json"] or "[]"),
-                possible_errors=quality_row["possible_errors"] or 0,
-                status=QualityStatus(quality_row["status"]) if quality_row["status"] else QualityStatus.OK,
-            )
-            if quality_row
-            else None
-        )
-
-        documents.append(
-            Document(
-                document_id=document_id,
-                source=source,
-                metadata=rebuild_metadata(row),
-                extraction=ExtractionResult(
-                    document_id=document_id,
-                    source_file=source.filename,
-                    method=ExtractionMethod(row["extraction_method"])
-                    if row["extraction_method"]
-                    else ExtractionMethod.NATIVE,
-                    pages=pages,
-                ),
-                articles=articles,
-                quality=quality,
-                validation=ValidationStatus(row["validation"] or "en_attente"),
-                validation_note=row["validation_note"] or "",
-                text_hash=row["text_hash"],
-                processed_at=row["processed_at"],
-                pipeline_version=row["pipeline_version"] or "",
-                errors=json.loads(row["errors_json"] or "[]"),
-            )
-        )
-    return documents
 
 
 def cmd_serve(args: argparse.Namespace, config: Config) -> int:

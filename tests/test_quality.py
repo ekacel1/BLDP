@@ -441,3 +441,38 @@ class TestSummary:
 
     def test_empty_summary(self):
         assert summarize([])["count"] == 0
+
+
+class TestNumberDateConsistency:
+    """§15 : détecter les incohérences, sans trancher à la place de l'humain."""
+
+    def _document(self, number, date):
+        document = build_document()
+        document.metadata.number = number
+        document.metadata.date = date
+        return document
+
+    def test_mismatched_years_are_flagged(self, config):
+        report = evaluate(self._document("2025-11", "2024-09-02"), config)
+        issue = next(
+            (i for i in report.issues if i.code == "date_incoherente_avec_le_numero"), None
+        )
+        assert issue is not None
+        assert "2025" in issue.message and "2024" in issue.message
+
+    def test_ocr_year_typo_is_flagged(self, config):
+        report = evaluate(self._document("2025-01", "2026-06-26"), config)
+        assert any(i.code == "date_incoherente_avec_le_numero" for i in report.issues)
+
+    def test_matching_years_are_silent(self, config):
+        report = evaluate(self._document("2025-18", "2025-07-25"), config)
+        assert not any(i.code == "date_incoherente_avec_le_numero" for i in report.issues)
+
+    def test_year_end_signature_is_tolerated(self, config):
+        """Un texte de fin d'année peut porter le millésime suivant."""
+        report = evaluate(self._document("2025-20", "2026-01-05"), config)
+        assert not any(i.code == "date_incoherente_avec_le_numero" for i in report.issues)
+
+    def test_a_non_year_number_is_ignored(self, config):
+        report = evaluate(self._document("145/PR", "2025-07-25"), config)
+        assert not any(i.code == "date_incoherente_avec_le_numero" for i in report.issues)
