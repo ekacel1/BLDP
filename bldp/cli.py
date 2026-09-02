@@ -399,6 +399,51 @@ def build_parser() -> argparse.ArgumentParser:
     suivi_actions.add_parser("etat", parents=[common], help="tableau de bord par étape")
     p_suivi.set_defaults(func=cmd_suivi)
 
+    # -- relire -------------------------------------------------------------
+    p_relire = subparsers.add_parser(
+        "relire",
+        parents=[common],
+        help="relecture assistée par un modèle (envoi hors machine)",
+        description=(
+            "Fait relire des documents déjà traités par un modèle de langue, "
+            "qui propose des corrections d'OCR. Chaque correction est "
+            "confrontée au texte source avant d'être appliquée ; ce qui ne se "
+            "prouve pas devient un signalement.\n\n"
+            "ATTENTION : relire envoie le texte des documents à une API "
+            "distante. Sans --oui, la commande se contente d'annoncer ce qui "
+            "partirait et ce que cela coûterait — elle n'appelle rien."
+        ),
+    )
+    p_relire.add_argument(
+        "reference", nargs="*",
+        help="identifiants de documents ou de tickets ; vide = voir --etape",
+    )
+    p_relire.add_argument(
+        "--etape", default="a_verifier",
+        help="relire les documents dont le ticket est à cette étape (défaut : a_verifier)",
+    )
+    p_relire.add_argument(
+        "--limit", type=int, default=10,
+        help="nombre maximal de documents dans le lot (défaut : 10)",
+    )
+    p_relire.add_argument(
+        "--oui", action="store_true",
+        help="confirmer l'envoi : sans ce drapeau, rien ne quitte la machine",
+    )
+    p_relire.add_argument(
+        "--par", default="relecture-ia",
+        help="acteur consigné au journal de suivi",
+    )
+    p_relire.add_argument(
+        "--rapport", metavar="FICHIER",
+        help="écrire le compte rendu détaillé dans ce fichier JSON",
+    )
+    p_relire.add_argument(
+        "--sans-ecriture", action="store_true",
+        help="relire sans enregistrer les corrections (inspection seule)",
+    )
+    p_relire.set_defaults(func=cmd_relire)
+
     # -- stats --------------------------------------------------------------
     p_stats = subparsers.add_parser(
         "stats", parents=[common], help="afficher l'état du corpus enregistré"
@@ -495,6 +540,15 @@ def cmd_doctor(args: argparse.Namespace, config: Config) -> int:
     print("\nInterface web (optionnelle) :")
     check_module("fastapi", "serveur web", False)
     check_module("uvicorn", "serveur ASGI", False)
+
+    print("\nRelecture assistée (optionnelle, envoie du texte hors machine) :")
+    check_module("anthropic", "client d'API", False)
+    from bldp.core.review import check_ready as review_ready
+
+    pret, obstacles = review_ready(config)
+    print(f"    relecture opérationnelle : {'OUI' if pret else 'NON'}")
+    for obstacle in obstacles:
+        print(f"      -> {obstacle}")
 
     print("\nRépertoires de travail :")
     for key in ("input", "raw", "processed", "validated", "embeddings", "exports"):
@@ -1282,6 +1336,273 @@ def _open_database(config: Config):
         )
         return None
     return LegalDatabase(path, create=False)
+
+
+# ---------------------------------------------------------------------------
+# Relecture assistée
+# ---------------------------------------------------------------------------
+
+
+def cmd_relire(args: argparse.Namespace, config: Config) -> int:
+    """Relecture assistée d'un lot : annonce d'abord, envoi ensuite.
+
+    La commande est délibérément en deux temps. Sans ``--oui``, elle n'appelle
+    rien : elle liste ce qui partirait et ce que cela coûterait. Envoyer le
+    texte de documents juridiques hors de la machine se décide en connaissance
+    de cause, pas par inadvertance (§27).
+    """
+    from bldp.core.review import check_ready, plan_review, run_review
+    from bldp.core.storage.sqlite_store import load_document, load_documents
+    from bldp.core.tracking import Stage, TrackingRegistry
+    from bldp.core.tracking.registry import TrackingError
+
+    logger = get_logger()
+    database = _open_database(config)
+    if database is None:
+        return EXIT_ERROR
+
+    with database:
+        documents = _relire_selection(args, config, database, load_document)
+        if documents is None:
+            return EXIT_ERROR
+        if not documents:
+            print(
+                "Aucun document à relire. Essayez : python -m bldp suivi liste"
+            )
+            return EXIT_OK
+
+        plan = plan_review(documents, config)
+        _relire_afficher_plan(plan)
+
+        pret, obstacles = check_ready(config)
+        if not pret:
+            print("\nLa relecture assistée n'est pas utilisable en l'état :")
+            for obstacle in obstacles:
+                print(f"  - {obstacle}")
+            return EXIT_ERROR
+
+        if not args.oui:
+            print(
+                "\nRien n'a été envoyé. Pour lancer réellement la relecture, "
+                "ajoutez --oui."
+            )
+            return EXIT_OK
+
+        if not plan.eligible:
+            print("\nAucun document éligible : rien à envoyer.")
+            return EXIT_ERROR
+
+        retenus = {d.document_id for d in plan.eligible}
+        a_relire = [d for d in documents if d.document_id in retenus]
+
+        print(f"\nRelecture de {len(a_relire)} document(s)...")
+        resultat = run_review(a_relire, config, plan=plan)
+
+    _relire_afficher_resultat(resultat)
+
+    if args.sans_ecriture:
+        print(
+            "\n--sans-ecriture : le corpus n'a pas été modifié, aucun ticket "
+            "n'a bougé."
+        )
+    else:
+        _relire_enregistrer(
+            config, a_relire, resultat, args.par,
+            Stage, TrackingRegistry, TrackingError, load_documents, logger,
+        )
+
+    if args.rapport:
+        import json
+
+        chemin = Path(args.rapport)
+        chemin.parent.mkdir(parents=True, exist_ok=True)
+        chemin.write_text(
+            json.dumps(
+                {"plan": plan.to_dict(), "relecture": resultat.to_dict()},
+                ensure_ascii=False,
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+        print(f"Compte rendu détaillé : {chemin}")
+
+    # Un échec isolé n'est pas un échec de commande : le reste du lot a été
+    # relu, et le compte rendu le dit. Seul un lot entièrement en échec l'est.
+    tout_echoue = bool(resultat.results) and len(resultat.failed) == len(resultat.results)
+    return EXIT_ERROR if tout_echoue else EXIT_OK
+
+
+def _relire_selection(args, config, database, load_document):
+    """Documents visés par la commande, par référence ou par étape de suivi."""
+    from bldp.core.tracking import Stage, TrackingRegistry
+    from bldp.core.tracking.registry import TrackingError
+
+    logger = get_logger()
+    identifiants: list[str] = []
+
+    if args.reference:
+        with TrackingRegistry(config.path("database")) as registry:
+            for reference in args.reference:
+                ticket = registry.resolve(reference)
+                identifiants.append(ticket.document_id if ticket else reference)
+    else:
+        try:
+            stage = Stage(args.etape)
+        except ValueError:
+            connues = ", ".join(s.value for s in Stage)
+            logger.error(
+                "Étape inconnue « %s ». Étapes connues : %s", args.etape, connues
+            )
+            return None
+        with TrackingRegistry(config.path("database")) as registry:
+            identifiants = [
+                ticket.document_id
+                for ticket in registry.list_tickets(stage, None, args.limit)
+            ]
+
+    documents = []
+    for identifiant in identifiants[: args.limit]:
+        document = load_document(database, identifiant)
+        if document is None:
+            logger.warning("Document introuvable dans le corpus : %s", identifiant)
+            continue
+        documents.append(document)
+    return documents
+
+
+def _relire_afficher_plan(plan) -> int:
+    """Annonce ce qui partirait, avant tout appel."""
+    print(f"Modèle : {plan.model}")
+    if plan.collation:
+        print(
+            "Mode : collation — l'image de chaque page part avec le texte, et "
+            "fait foi."
+        )
+    else:
+        print(
+            "Mode : texte seul (ai_review.send_page_images = false). Le modèle "
+            "comparera l'extraction à elle-même : il ne pourra corriger que ce "
+            "que le texte prouve déjà."
+        )
+    print(f"{'DOCUMENT':<26} {'PAGES':>6} {'ART.':>5} {'CARACT.':>9} {'IMAGES':>7}  ÉTAT")
+    print("-" * 84)
+    for entree in plan.documents:
+        etat = "à relire" if entree.eligible else f"écarté — {entree.skip_reason[:30]}"
+        print(
+            f"{entree.document_id[:26]:<26} {entree.pages:>6} "
+            f"{entree.articles:>5} {entree.chars:>9} {entree.images or '—':>7}  {etat}"
+        )
+    print("-" * 84)
+    images = sum(d.images for d in plan.eligible)
+    print(
+        f"{len(plan.eligible)} document(s) partiraient hors de cette machine"
+        + (f", dont {images} image(s) de page" if images else "")
+        + f" ; {len(plan.skipped)} écarté(s)."
+    )
+    if images:
+        # L'image d'un scan porte plus que son texte : en-têtes, tampons,
+        # signatures manuscrites. Le dire avant, pas après.
+        print(
+            "    Une image de page comporte aussi les en-têtes, tampons et "
+            "signatures de l'original."
+        )
+    print(
+        f"Coût estimé : {plan.estimated_usd:.2f} $ "
+        f"(plafond {plan.ceiling_usd:.2f} $ si toutes les réponses sont maximales)."
+    )
+    return EXIT_OK
+
+
+def _relire_afficher_resultat(resultat) -> None:
+    print()
+    print(f"{'DOCUMENT':<28} {'VERDICT':<22} {'CORR.':>6} {'REFUS':>6} {'SIGN.':>6}")
+    print("-" * 76)
+    for revue in resultat.results:
+        verdict = revue.verdict if revue.ok else f"échec : {revue.error[:14]}"
+        print(
+            f"{revue.document_id[:28]:<28} {verdict:<22} "
+            f"{len(revue.applied):>6} {len(revue.refused):>6} "
+            f"{len(revue.findings):>6}"
+        )
+    print("-" * 76)
+    print(
+        f"{len(resultat.results)} relu(s), {len(resultat.corrected)} corrigé(s), "
+        f"{len(resultat.doubtful)} douteux, {len(resultat.failed)} en échec. "
+        f"Coût réel : {resultat.total_usd:.4f} $."
+    )
+    sans_image = [r for r in resultat.results if r.ok and not r.collated]
+    if sans_image:
+        print(
+            f"\n{len(sans_image)} document(s) relu(s) SANS l'image de "
+            "l'original : leur verdict ne vaut pas celui d'une collation."
+        )
+    for revue in resultat.results:
+        if revue.ok and revue.synthese:
+            marque = "" if revue.collated else "  [sans image]"
+            print(f"\n{revue.document_id}{marque} — {revue.synthese}")
+            for correction in revue.applied:
+                print(f"    appliquée : {correction.summary}")
+            for signalement in revue.findings:
+                print(f"    signalé   : {signalement.message[:100]}")
+
+
+def _relire_enregistrer(
+    config, documents, resultat, acteur,
+    Stage, TrackingRegistry, TrackingError, load_documents, logger,
+) -> None:
+    """Écrit les corrections, réexporte, et fait avancer les tickets.
+
+    Le ticket passe à ``revue_ia``, jamais à ``valide`` : un modèle qui se
+    tromperait sur un article de loi le ferait de façon plausible, donc
+    invisible. La signature reste humaine (§16). ``ai_review.can_validate``
+    permet de lever cette réserve, sciemment.
+    """
+    from bldp.core.storage.exporters import export_all
+    from bldp.core.storage.sqlite_store import LegalDatabase
+
+    par_verdict = {r.document_id: r for r in resultat.results}
+    corriges = [d for d in documents if par_verdict.get(d.document_id, None)
+                and par_verdict[d.document_id].ok]
+    if corriges:
+        with LegalDatabase(config.path("database")) as database:
+            database.save_documents(
+                corriges,
+                include_pages=bool(config.get("export.include_page_text", True)),
+            )
+            # Les exports se refont sur **tout** le corpus : n'exporter que le
+            # lot relu écraserait documents.jsonl avec une fraction du corpus.
+            complet = load_documents(database)
+        export_all(complet, config)
+        print(f"\nCorpus mis à jour : {len(corriges)} document(s), exports refaits.")
+
+    peut_valider = bool(config.get("ai_review.can_validate", False))
+    with TrackingRegistry(config.path("database")) as registry:
+        for revue in resultat.results:
+            ticket = registry.resolve(revue.document_id)
+            if ticket is None:
+                continue
+
+            detail = (
+                f"verdict « {revue.verdict} », {len(revue.applied)} correction(s) "
+                f"appliquée(s), {len(revue.refused)} refusée(s), "
+                f"{len(revue.findings)} signalement(s)"
+                if revue.ok
+                else f"relecture en échec : {revue.error}"
+            )
+            registry.annotate(ticket.ticket_id, detail, acteur)
+
+            if not revue.ok:
+                continue
+            cible = Stage.REVUE_IA
+            if revue.verdict == "douteux":
+                cible = Stage.A_VERIFIER
+            elif revue.verdict == "conforme" and peut_valider:
+                cible = Stage.VALIDE
+            try:
+                mis = registry.advance(ticket.ticket_id, cible, acteur, detail)
+                print(f"{mis.ticket_id} ({revue.document_id}) : {mis.badge}")
+            except TrackingError as exc:
+                logger.warning("Suivi non mis à jour pour %s : %s", revue.document_id, exc)
 
 
 def cmd_stats(args: argparse.Namespace, config: Config) -> int:

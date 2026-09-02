@@ -25,6 +25,7 @@ système de recherche/RAG.
 - [Configuration](#configuration)
 - [Exemples](#exemples)
 - [Traçabilité et validation humaine](#traçabilité-et-validation-humaine)
+- [Relecture assistée par un modèle](#relecture-assistée-par-un-modèle)
 - [Limites connues](#limites-connues)
 - [Autres juridictions](#autres-juridictions)
 - [Tests](#tests)
@@ -186,6 +187,8 @@ python -m bldp validate --document loi_2026_001 --set-status valide
 | `parse`    | extraire + nettoyer + découper en articles (diagnostic) |
 | `process`  | traiter sans exporter, vers `data/processed/` |
 | `validate` | passer en revue la qualité, enregistrer une décision |
+| `suivi`    | tickets, étapes, journal — qui a fait quoi, et quand |
+| `relire`   | relecture assistée par un modèle (envoi hors machine) |
 | `embed`    | générer les embeddings et l'index vectoriel |
 | `search`   | rechercher dans le corpus (plein texte ou vectoriel) |
 | `trace`    | remonter d'un article à sa page et son fichier source |
@@ -555,6 +558,138 @@ Trois décisions humaines sont possibles : `valide`, `a_verifier`, `rejete`. Un
 document dont le contrôle qualité ne trouve rien reste `en_attente` — jamais
 `valide` automatiquement. La décision d'un relecteur **survit** à un
 retraitement.
+
+---
+
+## Relecture assistée par un modèle
+
+`bldp relire` ne demande pas à un modèle de *corriger* le texte. Il lui demande
+de le **collationner** : mettre l'image de la page d'origine en regard de ce
+que la chaîne en a tiré, et rapporter ce qui diffère. Ce qu'il doit écrire,
+c'est ce qui figure sur l'image — jamais ce qui devrait logiquement s'y
+trouver.
+
+### Pourquoi l'image, et pas seulement le texte
+
+C'est le point à comprendre avant tout le reste. Sans image, un modèle qui
+« relit » compare le texte des articles au texte des pages — or les deux
+sortent de la **même** extraction. Là où l'OCR s'est trompé, il s'est trompé
+aux deux endroits : il n'y a rien à comparer, et tout ce que le modèle
+proposerait serait déduit de ce qui *paraît* cohérent.
+
+Un exemple réel du corpus. L'OCR de `arrete_2018_001` produit :
+
+```text
+Articl'6 promi�r
+F-rr appircalion des drsposilrons des artr�les 3 et 4 du ci�cret r"r" 2018-106
+```
+
+Là où l'image porte, nettement :
+
+```text
+Article premier
+En application des dispositions des articles 3 et 4 du décret n° 2018-106
+```
+
+Aucune quantité de raisonnement sur le seul texte ne permet de retrouver
+« Article premier » de façon sûre. Avec l'image, il suffit de lire. L'image de
+la page est la seule référence qui ne vienne pas de l'OCR — c'est pour cela
+qu'un document dont le PDF d'origine a disparu est **écarté** plutôt que relu.
+
+### Le modèle propose, la mécanique dispose
+
+Aucune correction n'est appliquée sur la seule parole du modèle. Comme la
+référence — l'image — n'est pas mécaniquement lisible, on ne peut pas *prouver*
+qu'une lecture est juste ; on peut en revanche **borner** ce qu'une lecture a
+le droit d'être :
+
+| Contrôle | Laisse passer | Arrête |
+|---|---|---|
+| l'image a bien été transmise | une lecture sur une page réellement envoyée | une correction qui invoque une image jamais reçue |
+| la page citée porte l'article | « je lis ceci page 3 », l'article étant page 3 | une page qui n'existe pas, ou qui ne porte pas l'article |
+| le texte reste le même texte | une transcription, même d'un scan très abîmé | une reformulation, une invention |
+| la longueur ne dérive pas | une ligne réparée | une phrase ajoutée |
+| un numéro s'inscrit dans la suite | « Article I » → « 8 » entre le 7 et le 9 | « Article I » → « 42 » |
+| rien ne disparaît | — | vider un article, en supprimer un |
+| ce n'est pas une réécriture | quelques articles réparés | la majorité du document corrigée |
+
+Le troisième contrôle a été **calibré sur le corpus**, pas choisi au jugé. Sur
+un scan très dégradé, une transcription pourtant exacte n'atteint que 0,56 de
+fidélité, quand une invention plausible tombe à 0,40 et une reformulation à
+0,35. Un seuil réglé sur des dégâts légers aurait rejeté précisément les
+documents qui ont le plus besoin d'être relus. Les mesures sont figées dans
+`tests/test_review.py::TestCalibrageDeLaFidelite`.
+
+Ce qui ne passe pas n'est pas jeté : c'est retenu comme **signalement**, avec
+la lecture proposée, et un humain tranche. Rétablir une ligne entière que
+l'OCR avait manquée et inventer une ligne entière sont d'ailleurs
+mécaniquement indiscernables — les deux sont donc refusées et signalées, ce
+qui est la bonne réponse : cette décision-là revient à une personne.
+
+Enfin, les fautes du document d'origine sont **conservées**. Si un décret
+imprime « un (02) socio-anthropologues », cette incohérence *est* le texte
+officiel.
+
+### Rien ne part sans consentement explicite
+
+Relire avec un modèle distant envoie le texte des documents hors de la machine,
+ce que le §27 interdit par défaut. Quatre verrous doivent être levés :
+
+```yaml
+# config/local.yaml
+privacy:
+  allow_external_calls: true    # 1. autoriser toute sortie de document
+ai_review:
+  enabled: true                 # 2. autoriser la relecture
+```
+
+```bash
+export ANTHROPIC_API_KEY="sk-ant-..."   # 3. la clé, jamais dans un fichier
+pip install -e ".[review]"
+```
+
+```bash
+# 4. sans --oui, la commande n'appelle rien : elle annonce
+python -m bldp relire --etape a_verifier --limit 10
+```
+
+```text
+Mode : collation — l'image de chaque page part avec le texte, et fait foi.
+DOCUMENT                    PAGES  ART.   CARACT.  IMAGES  ÉTAT
+accord_2022_324                17    55     25842      17  à relire
+arrete_2018_001                 2     2      3044       2  à relire
+11 document(s) partiraient hors de cette machine, dont 47 image(s) de page ; 0 écarté(s).
+    Une image de page comporte aussi les en-têtes, tampons et signatures de l'original.
+Coût estimé : 1.42 $ (plafond 5.13 $ si toutes les réponses sont maximales).
+
+Rien n'a été envoyé. Pour lancer réellement la relecture, ajoutez --oui.
+```
+
+Notez l'avertissement : la collation envoie l'**image** des pages, qui porte
+davantage que leur texte — en-têtes, tampons, signatures manuscrites. C'est
+dit avant l'envoi, pas après.
+
+Un document trop long, ou dont le PDF d'origine a disparu, est **écarté plutôt
+que relu à moitié** : relire une partie d'un texte et conclure sur l'ensemble
+serait un faux diagnostic.
+
+### La relecture ne valide pas
+
+Un document relu passe à l'étape `revue_ia`, badge `[IA]` — jamais à `valide`.
+Un modèle qui se tromperait sur un article de loi le ferait de façon plausible,
+donc invisible ; la signature reste humaine (§16). Un verdict `douteux` renvoie
+au contraire le ticket à `a_verifier`.
+
+`ai_review.can_validate: true` lève cette réserve. À n'activer qu'en sachant
+exactement ce qu'on échange contre le temps gagné.
+
+```bash
+python -m bldp relire --etape a_verifier --oui --rapport data/relecture.json
+python -m bldp suivi liste --etape revue_ia
+```
+
+L'interface web montre l'état de la relecture et le coût d'un lot, mais **ne
+peut pas la lancer** : un clic n'est pas un consentement éclairé.
 
 ---
 

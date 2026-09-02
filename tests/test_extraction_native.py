@@ -242,3 +242,31 @@ class TestReadingOrder:
         brut = extract_document(headers_pdf, "journal", sort_blocks=False)
         trie = extract_document(headers_pdf, "journal", sort_blocks=True)
         assert sorted(brut.full_text.split()) == sorted(trie.full_text.split())
+
+
+class TestBatchCategory:
+    """Régression du traitement par lot.
+
+    « pipeline input/arretes » scanne directement le dossier de la catégorie :
+    le PDF n'a alors aucun sous-dossier au-dessus de lui, et tout le lot
+    tombait dans « autres ». Le nom du dossier scanné compte lui aussi.
+    """
+
+    def test_scanning_a_category_folder_directly(self, tmp_path):
+        chemin = tmp_path / "arretes" / "a.pdf"
+        chemin.parent.mkdir()
+        chemin.write_bytes(b"%PDF-1.4")
+        assert detect_category(chemin, tmp_path / "arretes") == "arretes"
+
+    def test_a_subfolder_still_wins_over_the_root(self, tmp_path):
+        """input/decrets/ sous une racine « arretes » : le plus proche gagne."""
+        chemin = tmp_path / "arretes" / "decrets" / "a.pdf"
+        chemin.parent.mkdir(parents=True)
+        chemin.write_bytes(b"%PDF-1.4")
+        assert detect_category(chemin, tmp_path / "arretes") == "decrets"
+
+    def test_an_unknown_root_stays_autres(self, tmp_path):
+        chemin = tmp_path / "dossier_libre" / "a.pdf"
+        chemin.parent.mkdir()
+        chemin.write_bytes(b"%PDF-1.4")
+        assert detect_category(chemin, tmp_path / "dossier_libre") == "autres"

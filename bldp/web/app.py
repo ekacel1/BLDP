@@ -215,6 +215,198 @@ def create_app(config: Config | None = None) -> Any:
             raise HTTPException(status_code=404, detail="Traitement inconnu.")
         return job.to_dict()
 
+    # -- Tableau de bord ----------------------------------------------------
+
+    @app.get("/api/stats")
+    def stats() -> dict:
+        """Chiffres du corpus, pour le tableau de bord.
+
+        Tout vient de la base : la page ne calcule rien, elle affiche.
+        """
+        with _database(config) as database:
+            if database is None:
+                return {"disponible": False}
+            counts = {
+                cle: database.connection.execute(requete).fetchone()[0] or 0
+                for cle, requete in {
+                    "documents": "SELECT COUNT(*) FROM documents",
+                    "pages": "SELECT COALESCE(SUM(page_count), 0) FROM documents",
+                    "articles": "SELECT COUNT(*) FROM articles",
+                    "alineas": "SELECT COUNT(*) FROM alineas",
+                    "a_verifier": (
+                        "SELECT COUNT(*) FROM documents WHERE validation = 'a_verifier'"
+                    ),
+                }.items()
+            }
+            par_categorie = [
+                {"categorie": row["category"] or "autres", "documents": row["n"]}
+                for row in database.connection.execute(
+                    "SELECT category, COUNT(*) AS n FROM documents "
+                    "GROUP BY category ORDER BY n DESC"
+                )
+            ]
+        etapes: list[dict] = []
+        try:
+            from bldp.core.tracking import STAGE_BADGES, Stage, TrackingRegistry
+
+            with TrackingRegistry(config.path("database")) as suivi:
+                compte = suivi.counts_by_stage()
+            for stage in Stage:
+                n = compte.get(stage.value, 0)
+                if n:
+                    marker, label = STAGE_BADGES[stage]
+                    etapes.append(
+                        {"etape": stage.value, "badge": marker, "libelle": label, "tickets": n}
+                    )
+        except Exception:  # noqa: BLE001 — le suivi ne bloque jamais la page
+            pass
+        return {
+            "disponible": True,
+            "compteurs": counts,
+            "par_categorie": par_categorie,
+            "par_etape": etapes,
+        }
+
+    # -- Relecture assistée : état, jamais déclenchement ---------------------
+
+    @app.get("/api/relecture")
+    def relecture_etat(etape: str = "a_verifier", limit: int = 20) -> dict:
+        """État de la relecture assistée, et ce qu'un lot représenterait.
+
+        Cette route **ne déclenche rien**. Un bouton de navigateur est le pire
+        endroit pour décider d'envoyer des documents hors de la machine : un
+        clic n'est pas un consentement éclairé. La relecture se lance depuis
+        le terminal, où la commande annonce le lot et son coût avant tout
+        appel (``python -m bldp relire --oui``).
+        """
+        from bldp.core.review import check_ready, plan_review
+        from bldp.core.storage.sqlite_store import LegalDatabase, load_document
+        from bldp.core.tracking import Stage, TrackingRegistry
+
+        pret, obstacles = check_ready(config)
+        etat = {
+            "disponible": pret,
+            "obstacles": obstacles,
+            "modele": str(config.get("ai_review.model", "")),
+            "peut_valider": bool(config.get("ai_review.can_validate", False)),
+            "commande": f"python -m bldp relire --etape {etape} --oui",
+            "collation_sur_image": bool(
+                config.get("ai_review.send_page_images", True)
+            ),
+            "images": 0,
+            "documents": [],
+        }
+
+        database_path = config.path("database")
+        if not database_path.exists():
+            return etat
+        try:
+            stage = Stage(etape)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Étape inconnue : {etape}")
+
+        with TrackingRegistry(database_path) as suivi:
+            identifiants = [
+                t.document_id for t in suivi.list_tickets(stage, None, limit)
+            ]
+        with LegalDatabase(database_path, create=False) as database:
+            documents = [
+                document
+                for document in (
+                    load_document(database, identifiant)
+                    for identifiant in identifiants
+                )
+                if document is not None
+            ]
+
+        plan = plan_review(documents, config)
+        etat["documents"] = [d.to_dict() for d in plan.documents]
+        etat["collation_sur_image"] = plan.collation
+        etat["images"] = sum(d.images for d in plan.eligible)
+        etat["cout_estime_usd"] = round(plan.estimated_usd, 2)
+        etat["cout_plafond_usd"] = round(plan.ceiling_usd, 2)
+        return etat
+
+    # -- Suivi : tickets et décisions ---------------------------------------
+
+    @app.get("/api/suivi")
+    def suivi_liste(etape: str = "") -> dict:
+        """Tickets du registre de suivi, filtrables par étape."""
+        from bldp.core.tracking import Stage, TrackingRegistry
+
+        database_path = config.path("database")
+        if not database_path.exists():
+            return {"tickets": []}
+        try:
+            stage = Stage(etape) if etape else None
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Étape inconnue : {etape}")
+        with TrackingRegistry(database_path) as suivi:
+            return {"tickets": [t.to_dict() for t in suivi.list_tickets(stage)]}
+
+    @app.get("/api/suivi/{reference}")
+    def suivi_detail(reference: str) -> dict:
+        """Fiche d'un ticket et son journal complet."""
+        from bldp.core.tracking import TrackingRegistry, allowed_transitions
+
+        with TrackingRegistry(config.path("database")) as suivi:
+            ticket = suivi.resolve(reference)
+            if ticket is None:
+                raise HTTPException(status_code=404, detail="Ticket inconnu.")
+            fiche = ticket.to_dict()
+            fiche["journal"] = [e.to_dict() for e in suivi.history(ticket.ticket_id)]
+            fiche["etapes_possibles"] = sorted(
+                s.value for s in allowed_transitions(ticket.stage)
+            )
+            return fiche
+
+    @app.post("/api/suivi/{reference}/avancer")
+    def suivi_avancer(
+        reference: str,
+        etape: str = Form(...),
+        par: str = Form(...),
+        motif: str = Form(""),
+    ) -> dict:
+        """Change l'étape d'un ticket — les règles du registre s'appliquent.
+
+        C'est le registre qui décide : transitions contrôlées, et jamais de
+        validation sans un acteur humain nommé (§16). L'interface ne fait que
+        transmettre, et affiche le refus tel quel.
+        """
+        from bldp.core.tracking import Stage, TrackingRegistry
+        from bldp.core.tracking.registry import TrackingError
+
+        try:
+            stage = Stage(etape)
+        except ValueError:
+            raise HTTPException(status_code=400, detail=f"Étape inconnue : {etape}")
+        with TrackingRegistry(config.path("database")) as suivi:
+            ticket = suivi.resolve(reference)
+            if ticket is None:
+                raise HTTPException(status_code=404, detail="Ticket inconnu.")
+            try:
+                mis = suivi.advance(ticket.ticket_id, stage, par.strip(), motif.strip())
+            except TrackingError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            return mis.to_dict()
+
+    @app.post("/api/suivi/{reference}/assigner")
+    def suivi_assigner(
+        reference: str, personne: str = Form(""), par: str = Form("interface")
+    ) -> dict:
+        from bldp.core.tracking import TrackingRegistry
+        from bldp.core.tracking.registry import TrackingError
+
+        with TrackingRegistry(config.path("database")) as suivi:
+            ticket = suivi.resolve(reference)
+            if ticket is None:
+                raise HTTPException(status_code=404, detail="Ticket inconnu.")
+            try:
+                mis = suivi.assign(ticket.ticket_id, personne.strip() or None, par)
+            except TrackingError as exc:
+                raise HTTPException(status_code=409, detail=str(exc))
+            return mis.to_dict()
+
     # -- Consultation (§22.4-6) ---------------------------------------------
 
     @app.get("/api/documents")
@@ -231,6 +423,7 @@ def create_app(config: Config | None = None) -> Any:
                         "number": row["number"],
                         "date": row["date"],
                         "pages": row["page_count"],
+                        "category": row["category"] or "autres",
                         "validation": row["validation"],
                     }
                     for row in database.list_documents()

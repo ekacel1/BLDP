@@ -100,6 +100,11 @@ def detect_category(path: Path, root: Path) -> str:
     for part in relative.parts[:-1]:
         if part.lower() in KNOWN_CATEGORIES:
             return part.lower()
+    # Le dossier scanné lui-même compte : « pipeline input/arretes » doit
+    # classer en « arretes ». Ne consulter que les sous-dossiers faisait
+    # tomber tout traitement par lot dans « autres ».
+    if root.name.lower() in KNOWN_CATEGORIES:
+        return root.name.lower()
     return "autres"
 
 

@@ -7,18 +7,51 @@
 <!--
   Aucune ressource externe : pas de CDN, pas de police distante, pas d'appel
   réseau sortant. Tout est servi localement (§27 du cahier des charges).
+
+  L'interface ne décide rien : elle affiche ce que la base contient et
+  transmet les décisions au registre de suivi, qui applique ses règles
+  (transitions contrôlées, jamais de validation sans un humain nommé).
 -->
 <style>
   :root {
-    --fond: #f7f7f5;
+    --fond: #f6f7f8;
     --carte: #ffffff;
-    --trait: #d9d9d4;
-    --texte: #1f2124;
-    --doux: #6b6f76;
+    --trait: #dcdfe3;
+    --trait-doux: #eceef0;
+    --texte: #1c2127;
+    --doux: #667085;
     --accent: #1f5c8b;
-    --ok: #2e7d4f;
-    --alerte: #a8630c;
+    --accent-fonce: #174569;
+    --accent-pale: #e8f0f7;
+    --ok: #1f7a4d;
+    --ok-pale: #e7f3ec;
+    --alerte: #9a5b00;
+    --alerte-pale: #fdf3e2;
     --erreur: #b3261e;
+    --erreur-pale: #fbeceb;
+    --neutre-pale: #eef0f2;
+    --ombre: 0 1px 2px rgba(16, 24, 40, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --fond: #14181d;
+      --carte: #1d232b;
+      --trait: #323a45;
+      --trait-doux: #262d36;
+      --texte: #e8eaed;
+      --doux: #9aa3af;
+      --accent: #6ba3d0;
+      --accent-fonce: #8fbcdf;
+      --accent-pale: #23303c;
+      --ok: #5cb885;
+      --ok-pale: #1e3129;
+      --alerte: #d99a3d;
+      --alerte-pale: #362b18;
+      --erreur: #e2726b;
+      --erreur-pale: #3a2321;
+      --neutre-pale: #262d36;
+      --ombre: none;
+    }
   }
   * { box-sizing: border-box; }
   body {
@@ -30,314 +63,580 @@
   header {
     background: var(--carte);
     border-bottom: 1px solid var(--trait);
-    padding: 14px 24px;
-    display: flex;
-    align-items: baseline;
-    gap: 12px;
-    flex-wrap: wrap;
+    padding: 12px 24px 0;
   }
-  header h1 { font-size: 17px; margin: 0; }
+  .entete-haut { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; }
+  header h1 { font-size: 17px; margin: 0 0 2px; }
   header .meta { color: var(--doux); font-size: 13px; }
-  main { max-width: 1100px; margin: 0 auto; padding: 24px; }
+  nav { display: flex; gap: 2px; margin-top: 10px; flex-wrap: wrap; }
+  nav button {
+    font: inherit; font-size: 14px;
+    background: none; border: none; border-bottom: 2px solid transparent;
+    padding: 8px 14px; cursor: pointer; color: var(--doux); border-radius: 0;
+  }
+  nav button:hover { color: var(--texte); }
+  nav button.actif {
+    color: var(--accent); border-bottom-color: var(--accent); font-weight: 600;
+  }
+  main { max-width: 1140px; margin: 0 auto; padding: 22px 24px 60px; }
+  .onglet { display: none; }
+  .onglet.actif { display: block; }
   section {
     background: var(--carte);
     border: 1px solid var(--trait);
-    border-radius: 6px;
+    border-radius: 8px;
+    box-shadow: var(--ombre);
     padding: 18px 20px;
-    margin-bottom: 20px;
+    margin-bottom: 18px;
   }
-  h2 { font-size: 15px; margin: 0 0 12px; letter-spacing: .01em; }
+  h2 { font-size: 15px; margin: 0 0 14px; }
+  h2 .sous { color: var(--doux); font-weight: 400; font-size: 13px; margin-left: 8px; }
+
+  /* --- tuiles de statistiques ------------------------------------------ */
+  .tuiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+  .tuile {
+    background: var(--carte); border: 1px solid var(--trait); border-radius: 8px;
+    padding: 14px 16px; box-shadow: var(--ombre);
+  }
+  .tuile .valeur { font-size: 26px; font-weight: 650; letter-spacing: -.01em; }
+  .tuile .libelle { color: var(--doux); font-size: 12.5px; margin-top: 2px; }
+  .tuile.attention .valeur { color: var(--alerte); }
+
+  /* --- barres (une seule teinte, étiquettes toujours visibles) ---------- */
+  .repartition { display: grid; gap: 8px; }
+  .ligne-barre { display: grid; grid-template-columns: 130px 1fr 46px; gap: 10px; align-items: center; }
+  .ligne-barre .nom { font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ligne-barre .n { font-size: 13.5px; text-align: right; font-variant-numeric: tabular-nums; }
+  .piste { height: 14px; background: var(--trait-doux); border-radius: 4px; overflow: hidden; }
+  .piste > div { height: 100%; background: var(--accent); border-radius: 0 4px 4px 0; min-width: 2px; }
+
+  /* --- badges d'étape (marqueur + libellé, jamais couleur seule) -------- */
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 2px 10px; border-radius: 11px; font-size: 12.5px;
+    background: var(--neutre-pale); border: 1px solid var(--trait);
+    white-space: nowrap;
+  }
+  .badge b { font-family: ui-monospace, Consolas, monospace; font-weight: 600; }
+  .badge.traite   { background: var(--accent-pale); color: var(--accent-fonce); border-color: transparent; }
+  .badge.valide   { background: var(--ok-pale); color: var(--ok); border-color: transparent; }
+  .badge.a_verifier, .badge.en_revue { background: var(--alerte-pale); color: var(--alerte); border-color: transparent; }
+  /* Relu par une machine : préparé, pas décidé. Un ton propre mais distinct
+     de « validé », pour qu'on ne confonde jamais les deux d'un coup d'œil. */
+  .badge.revue_ia { background: var(--accent-pale); color: var(--accent-fonce); border-color: transparent; font-style: italic; }
+  .badge.rejete   { background: var(--erreur-pale); color: var(--erreur); border-color: transparent; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 14px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--trait-doux); vertical-align: middle; }
+  th { color: var(--doux); font-weight: 600; font-size: 11.5px; text-transform: uppercase; letter-spacing: .04em; }
+  tr.cliquable { cursor: pointer; }
+  tr.cliquable:hover td { background: var(--accent-pale); }
+  td.num { font-variant-numeric: tabular-nums; text-align: right; }
+
   button {
-    font: inherit;
+    font: inherit; font-size: 14px;
     padding: 7px 14px;
     border: 1px solid var(--trait);
     background: var(--carte);
-    border-radius: 4px;
+    color: var(--texte);
+    border-radius: 6px;
     cursor: pointer;
   }
+  button:hover { border-color: var(--doux); }
   button.primaire { background: var(--accent); color: #fff; border-color: var(--accent); }
+  button.primaire:hover { background: var(--accent-fonce); border-color: var(--accent-fonce); }
   button:disabled { opacity: .5; cursor: default; }
-  table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  th, td { text-align: left; padding: 7px 10px; border-bottom: 1px solid var(--trait); }
-  th { color: var(--doux); font-weight: 600; font-size: 12px; text-transform: uppercase; }
-  tr.cliquable { cursor: pointer; }
-  tr.cliquable:hover { background: #f0f4f8; }
-  .pastille {
-    display: inline-block; padding: 1px 8px; border-radius: 10px;
-    font-size: 12px; border: 1px solid var(--trait);
+  input[type="text"], select {
+    font: inherit; font-size: 14px;
+    padding: 6px 10px; border: 1px solid var(--trait); border-radius: 6px;
+    background: var(--carte); color: var(--texte);
   }
-  .ok { color: var(--ok); border-color: var(--ok); }
-  .alerte { color: var(--alerte); border-color: var(--alerte); }
-  .erreur { color: var(--erreur); border-color: var(--erreur); }
-  .barre { height: 6px; background: #e6e6e2; border-radius: 3px; overflow: hidden; }
-  .barre > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  label { font-size: 13px; color: var(--doux); }
+  .rangee { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .colonnes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  @media (max-width: 860px) { .colonnes { grid-template-columns: 1fr; } }
+
   pre {
-    background: #fbfbfa; border: 1px solid var(--trait); border-radius: 4px;
+    background: var(--fond); border: 1px solid var(--trait); border-radius: 6px;
     padding: 12px; overflow-x: auto; white-space: pre-wrap;
     font: 13px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
     max-height: 340px; overflow-y: auto;
   }
-  .colonnes { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
-  @media (max-width: 800px) { .colonnes { grid-template-columns: 1fr; } }
   .discret { color: var(--doux); font-size: 13px; }
   .vide { color: var(--doux); font-style: italic; padding: 10px 0; }
-  label { font-size: 13px; color: var(--doux); }
-  .rangee { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .journal { font-size: 13px; border-left: 2px solid var(--trait); padding-left: 12px; display: grid; gap: 6px; }
+  .journal .quand { color: var(--doux); font-variant-numeric: tabular-nums; }
   .avertissement {
-    background: #fdf6e8; border: 1px solid #e8d5a8; border-radius: 4px;
+    background: var(--alerte-pale); border: 1px solid transparent; border-radius: 6px;
+    color: var(--texte);
     padding: 10px 12px; font-size: 13px; margin-bottom: 14px;
   }
+  .erreur-message { color: var(--erreur); font-size: 13px; }
+  .barre-progression { height: 6px; background: var(--trait-doux); border-radius: 3px; overflow: hidden; }
+  .barre-progression > div { height: 100%; background: var(--accent); width: 0; transition: width .3s; }
+  .pastille { display: inline-block; padding: 1px 8px; border-radius: 10px; font-size: 12px; border: 1px solid var(--trait); }
+  .pastille.ok { color: var(--ok); border-color: var(--ok); }
+  .pastille.alerte { color: var(--alerte); border-color: var(--alerte); }
+  .pastille.erreur { color: var(--erreur); border-color: var(--erreur); }
 </style>
 </head>
 <body>
 <header>
-  <h1>Benin Legal Data Pipeline</h1>
-  <span class="meta">v{{VERSION}} · juridiction : {{JURIDICTION}} · traitement 100 % local</span>
+  <div class="entete-haut">
+    <h1>Benin Legal Data Pipeline</h1>
+    <span class="meta">v{{VERSION}} · juridiction : {{JURIDICTION}} · traitement 100 % local</span>
+  </div>
+  <nav id="nav">
+    <button data-onglet="bord" class="actif">Tableau de bord</button>
+    <button data-onglet="suivi">Suivi</button>
+    <button data-onglet="corpus">Corpus</button>
+    <button data-onglet="traitement">Traitement</button>
+    <button data-onglet="exports">Exports</button>
+  </nav>
 </header>
 
 <main>
   <div class="avertissement">
     Cette interface ne prétend pas que l'extraction est exacte. Chaque document
-    doit être vérifié : comparez la page d'origine, le texte nettoyé et l'article
-    structuré avant de valider.
+    doit être vérifié — comparez la page d'origine, le texte nettoyé et
+    l'article structuré avant de valider. Rien ne se valide sans un nom.
   </div>
 
-  <!-- §22.1-3 : upload, lancement, progression -->
-  <section>
-    <h2>1 · Déposer un document</h2>
-    <div class="rangee">
-      <input type="file" id="fichier" accept="application/pdf">
-      <button class="primaire" id="envoyer">Traiter</button>
-      <span class="discret" id="message-upload"></span>
+  <!-- ============================= TABLEAU DE BORD ==================== -->
+  <div class="onglet actif" id="onglet-bord">
+    <div class="tuiles" id="tuiles"><p class="vide">Chargement…</p></div>
+    <div class="colonnes" style="margin-top:18px">
+      <section>
+        <h2>Documents par catégorie</h2>
+        <div class="repartition" id="repartition-categories"><p class="vide">—</p></div>
+      </section>
+      <section>
+        <h2>Avancement du suivi <span class="sous">tickets par étape</span></h2>
+        <div class="repartition" id="repartition-etapes"><p class="vide">—</p></div>
+      </section>
     </div>
-    <div id="taches" style="margin-top:14px"></div>
-  </section>
+  </div>
 
-  <!-- §22.4-6 : aperçu texte, articles, erreurs -->
-  <section>
-    <h2>2 · Corpus</h2>
-    <div id="documents"><p class="vide">Chargement…</p></div>
-  </section>
-
-  <section id="detail" hidden>
-    <h2>3 · Vérification</h2>
-    <div id="entete-document"></div>
-    <div id="anomalies"></div>
-
-    <h3 style="font-size:14px;margin:18px 0 8px">Comparaison</h3>
-    <div class="rangee" style="margin-bottom:8px">
-      <label for="choix-article">Article :</label>
-      <select id="choix-article"></select>
-    </div>
-    <div class="colonnes">
-      <div>
-        <div class="discret">① Page d'origine (texte brut extrait)</div>
-        <pre id="page-brute"></pre>
+  <!-- ============================= SUIVI ============================== -->
+  <div class="onglet" id="onglet-suivi">
+    <section>
+      <h2>File de travail <span class="sous">un ticket par contenu — le même document ne se traite pas deux fois</span></h2>
+      <div class="rangee" style="margin-bottom:12px">
+        <label for="filtre-etape">Étape</label>
+        <select id="filtre-etape">
+          <option value="">toutes</option>
+          <option value="importe">importé</option>
+          <option value="traite">traité</option>
+          <option value="a_verifier">à vérifier</option>
+          <option value="revue_ia">relu par IA</option>
+          <option value="en_revue">en revue</option>
+          <option value="valide">validé</option>
+          <option value="rejete">rejeté</option>
+          <option value="archive">archivé</option>
+        </select>
+        <button id="rafraichir-suivi">Actualiser</button>
       </div>
-      <div>
-        <div class="discret">② Page après nettoyage</div>
-        <pre id="page-nette"></pre>
+      <div id="tickets"><p class="vide">Chargement…</p></div>
+    </section>
+    <section id="fiche-ticket" hidden>
+      <h2 id="fiche-titre">Ticket</h2>
+      <div id="fiche-corps"></div>
+    </section>
+    <section>
+      <h2>Relecture assistée <span class="sous">un modèle propose, la mécanique vérifie, un humain signe</span></h2>
+      <div id="relecture"><p class="vide">Chargement…</p></div>
+    </section>
+  </div>
+
+  <!-- ============================= CORPUS ============================= -->
+  <div class="onglet" id="onglet-corpus">
+    <section>
+      <h2>Documents du corpus</h2>
+      <div id="documents"><p class="vide">Chargement…</p></div>
+    </section>
+    <section id="detail-document" hidden>
+      <h2 id="detail-titre">Document</h2>
+      <div id="detail-corps"></div>
+    </section>
+  </div>
+
+  <!-- ============================= TRAITEMENT ========================= -->
+  <div class="onglet" id="onglet-traitement">
+    <section>
+      <h2>Déposer un document</h2>
+      <div class="rangee">
+        <input type="file" id="fichier" accept="application/pdf">
+        <button class="primaire" id="envoyer">Traiter</button>
+        <span class="discret" id="message-upload"></span>
       </div>
-    </div>
-    <div class="discret" style="margin-top:12px">③ Article structuré</div>
-    <pre id="texte-article"></pre>
+      <div id="taches" style="margin-top:14px"></div>
+    </section>
+    <section>
+      <h2>Par lots <span class="sous">recommandé pour plusieurs documents</span></h2>
+      <pre>python -m bldp pipeline input/&lt;categorie&gt; --resume --workers 3</pre>
+      <p class="discret">
+        Chaque document traité est rangé dans <code>data/traites/&lt;categorie&gt;/</code>
+        (fiche JSON + texte). Avec <code>--resume</code>, un contenu déjà connu —
+        même sous un autre nom — n'est pas retraité, et une décision humaine
+        n'est jamais écrasée.
+      </p>
+    </section>
+  </div>
 
-    <!-- §22.7 : validation manuelle -->
-    <h3 style="font-size:14px;margin:18px 0 8px">Décision</h3>
-    <div class="rangee">
-      <button data-decision="valide">Validé</button>
-      <button data-decision="a_verifier">À vérifier</button>
-      <button data-decision="rejete">Rejeté</button>
-      <input type="text" id="note" placeholder="commentaire (facultatif)" style="flex:1;min-width:180px;padding:6px">
-      <span class="discret" id="message-validation"></span>
-    </div>
-  </section>
-
-  <!-- §22.8 : téléchargement -->
-  <section>
-    <h2>4 · Exports</h2>
-    <div id="exports"><p class="vide">Chargement…</p></div>
-  </section>
+  <!-- ============================= EXPORTS ============================ -->
+  <div class="onglet" id="onglet-exports">
+    <section>
+      <h2>Fichiers produits</h2>
+      <div id="exports"><p class="vide">Chargement…</p></div>
+    </section>
+  </div>
 </main>
 
 <script>
-const $ = (id) => document.getElementById(id);
-let documentCourant = null;
-let detailCourant = null;
+"use strict";
+/* Toute la logique tient ici, sans dépendance : la page interroge l'API
+   locale et affiche. Les décisions passent par le registre de suivi, qui
+   peut refuser — le refus est montré tel quel, jamais contourné. */
 
-async function api(url, options) {
-  const reponse = await fetch(url, options);
-  if (!reponse.ok) {
-    const corps = await reponse.json().catch(() => ({}));
-    throw new Error(corps.detail || `Erreur ${reponse.status}`);
-  }
-  return reponse.json();
+const $ = (sel) => document.querySelector(sel);
+const echappe = (v) => String(v ?? "").replace(/[&<>"']/g,
+  (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
+async function api(chemin, options) {
+  const reponse = await fetch(chemin, options);
+  const corps = await reponse.json().catch(() => ({}));
+  if (!reponse.ok) throw new Error(corps.detail || `Erreur ${reponse.status}`);
+  return corps;
 }
 
-// --- §22.1-3 : dépôt et progression ---------------------------------------
+/* ---------------------------- navigation ------------------------------- */
+$("#nav").addEventListener("click", (evt) => {
+  const bouton = evt.target.closest("button[data-onglet]");
+  if (!bouton) return;
+  document.querySelectorAll("#nav button").forEach(b => b.classList.toggle("actif", b === bouton));
+  document.querySelectorAll(".onglet").forEach(o =>
+    o.classList.toggle("actif", o.id === "onglet-" + bouton.dataset.onglet));
+  const charge = {
+    bord: chargerBord,
+    suivi: () => { chargerSuivi(); chargerRelecture(); },
+    corpus: chargerDocuments,
+    exports: chargerExports,
+  };
+  (charge[bouton.dataset.onglet] || (() => {}))();
+});
 
-$("envoyer").addEventListener("click", async () => {
-  const fichier = $("fichier").files[0];
-  if (!fichier) { $("message-upload").textContent = "Choisissez un PDF."; return; }
-  const donnees = new FormData();
-  donnees.append("file", fichier);
-  $("envoyer").disabled = true;
-  $("message-upload").textContent = "Envoi…";
+/* ---------------------------- tableau de bord -------------------------- */
+function barres(conteneur, lignes, classe) {
+  if (!lignes.length) { conteneur.innerHTML = '<p class="vide">Aucune donnée.</p>'; return; }
+  const max = Math.max(...lignes.map(l => l.n), 1);
+  conteneur.innerHTML = lignes.map(l => `
+    <div class="ligne-barre">
+      <span class="nom">${l.badge ? `<span class="badge ${echappe(l.cle)}"><b>${echappe(l.badge)}</b> ${echappe(l.nom)}</span>` : echappe(l.nom)}</span>
+      <div class="piste"><div style="width:${Math.round(100 * l.n / max)}%"></div></div>
+      <span class="n">${l.n}</span>
+    </div>`).join("");
+}
+
+async function chargerBord() {
   try {
-    const tache = await api("/api/upload", { method: "POST", body: donnees });
-    $("message-upload").textContent = `Traitement lancé (${tache.job_id}).`;
-    suivre(tache.job_id);
-  } catch (erreur) {
-    $("message-upload").textContent = erreur.message;
+    const s = await api("/api/stats");
+    if (!s.disponible) {
+      $("#tuiles").innerHTML = '<p class="vide">Aucun corpus : traitez un premier document.</p>';
+      return;
+    }
+    const c = s.compteurs;
+    $("#tuiles").innerHTML = [
+      ["documents", c.documents, ""],
+      ["pages", c.pages, ""],
+      ["articles", c.articles, ""],
+      ["alinéas", c.alineas, ""],
+      ["à vérifier", c.a_verifier, c.a_verifier ? "attention" : ""],
+    ].map(([libelle, valeur, cls]) => `
+      <div class="tuile ${cls}">
+        <div class="valeur">${valeur}</div>
+        <div class="libelle">${libelle}</div>
+      </div>`).join("");
+    barres($("#repartition-categories"),
+      s.par_categorie.map(x => ({nom: x.categorie, n: x.documents})));
+    barres($("#repartition-etapes"),
+      s.par_etape.map(x => ({nom: x.libelle, n: x.tickets, badge: x.badge, cle: x.etape})));
+  } catch (e) {
+    $("#tuiles").innerHTML = `<p class="erreur-message">${echappe(e.message)}</p>`;
+  }
+}
+
+/* ---------------------------- suivi ------------------------------------ */
+async function chargerSuivi() {
+  const zone = $("#tickets");
+  try {
+    const etape = $("#filtre-etape").value;
+    const {tickets} = await api("/api/suivi" + (etape ? `?etape=${etape}` : ""));
+    if (!tickets.length) { zone.innerHTML = '<p class="vide">Aucun ticket ne correspond.</p>'; return; }
+    zone.innerHTML = `<table><thead><tr>
+        <th>Ticket</th><th>Étape</th><th>Score</th><th>Assigné</th><th>Document</th>
+      </tr></thead><tbody>` +
+      tickets.map(t => `<tr class="cliquable" data-ticket="${echappe(t.ticket_id)}">
+        <td>${echappe(t.ticket_id)}</td>
+        <td><span class="badge ${echappe(t.stage)}"><b>${echappe(t.badge.split(" ")[0])}</b> ${echappe(t.badge.split(" ").slice(1).join(" "))}</span></td>
+        <td class="num">${t.quality_score != null ? t.quality_score.toFixed(2) : "—"}</td>
+        <td>${echappe(t.assignee || "—")}</td>
+        <td>${echappe(t.document_id)} <span class="discret">${echappe(t.title || "")}</span></td>
+      </tr>`).join("") + "</tbody></table>";
+    zone.querySelectorAll("tr.cliquable").forEach(tr =>
+      tr.addEventListener("click", () => ouvrirTicket(tr.dataset.ticket)));
+  } catch (e) {
+    zone.innerHTML = `<p class="erreur-message">${echappe(e.message)}</p>`;
+  }
+}
+$("#rafraichir-suivi").addEventListener("click", chargerSuivi);
+$("#filtre-etape").addEventListener("change", chargerSuivi);
+
+/* ------------------------- relecture assistée ---------------------------
+   Cette carte informe ; elle ne déclenche rien. Envoyer des documents hors
+   de la machine ne doit pas tenir à un clic : la commande le fait depuis le
+   terminal, après avoir annoncé le lot et son coût. */
+async function chargerRelecture() {
+  const zone = $("#relecture");
+  try {
+    const etat = await api("/api/relecture");
+    const retenus = etat.documents.filter(d => d.eligible);
+    const ecartes = etat.documents.filter(d => !d.eligible);
+
+    let entete;
+    if (etat.disponible) {
+      entete = `<p><span class="badge valide"><b>[V]</b> disponible</span>
+        Modèle : <code>${echappe(etat.modele)}</code>.</p>`;
+    } else {
+      entete = `<p><span class="badge rejete"><b>[X]</b> indisponible</span>
+        La relecture n'enverra rien tant que ceci n'est pas levé :</p>
+        <ul>${etat.obstacles.map(o => `<li>${echappe(o)}</li>`).join("")}</ul>`;
+    }
+
+    const images = retenus.reduce((t, d) => t + (d.images || 0), 0);
+    const mode = etat.collation_sur_image
+      ? `<p class="discret">Mode collation : l'image de chaque page part avec le
+         texte, et fait foi. Une image de page comporte aussi les en-têtes,
+         tampons et signatures de l'original.</p>`
+      : `<p class="erreur-message">Mode texte seul : le modèle comparera
+         l'extraction à elle-même et ne pourra corriger que ce que le texte
+         prouve déjà.</p>`;
+
+    const cout = retenus.length
+      ? `<p>${retenus.length} document(s) prêts à relire${images ? `, ${images} image(s) de page` : ""}
+         — coût estimé <b>${etat.cout_estime_usd} $</b>, plafond ${etat.cout_plafond_usd} $.
+         ${ecartes.length ? `${ecartes.length} écarté(s).` : ""}</p>`
+      : `<p class="vide">Aucun document en attente de relecture.</p>`;
+
+    const table = retenus.length ? `<table><thead><tr>
+        <th>Document</th><th>Pages</th><th>Articles</th><th>Caractères</th><th>Images</th>
+      </tr></thead><tbody>` + retenus.map(d => `<tr>
+        <td>${echappe(d.document_id)} <span class="discret">${echappe(d.title || "")}</span></td>
+        <td class="num">${d.pages}</td><td class="num">${d.articles}</td>
+        <td class="num">${d.chars}</td><td class="num">${d.images || "—"}</td>
+      </tr>`).join("") + "</tbody></table>" : "";
+
+    const ecartesHtml = ecartes.length ? `<p class="discret">Écartés : ` +
+      ecartes.map(d => `${echappe(d.document_id)} (${echappe(d.skip_reason)})`).join(" ; ") +
+      "</p>" : "";
+
+    const signature = etat.peut_valider
+      ? `<p class="erreur-message">ai_review.can_validate est activé : un verdict
+         « conforme » vaudra validation, sans relecture humaine.</p>`
+      : `<p class="discret">La relecture mène un ticket à « relu par IA », jamais
+         à « validé » : la signature reste humaine.</p>`;
+
+    zone.innerHTML = entete + mode + cout + table + ecartesHtml + signature +
+      `<p>Pour lancer : <code>${echappe(etat.commande)}</code></p>`;
+  } catch (e) {
+    zone.innerHTML = `<p class="erreur-message">${echappe(e.message)}</p>`;
+  }
+}
+
+async function ouvrirTicket(reference) {
+  const fiche = $("#fiche-ticket");
+  try {
+    const t = await api(`/api/suivi/${encodeURIComponent(reference)}`);
+    $("#fiche-titre").textContent = `${t.ticket_id} — ${t.document_id}`;
+    $("#fiche-corps").innerHTML = `
+      <div class="rangee" style="margin-bottom:10px">
+        <span class="badge ${echappe(t.stage)}"><b>${echappe(t.badge.split(" ")[0])}</b> ${echappe(t.badge.split(" ").slice(1).join(" "))}</span>
+        ${t.quality_score != null ? `<span class="discret">qualité ${t.quality_score.toFixed(2)}</span>` : ""}
+        <span class="discret">assigné : ${echappe(t.assignee || "—")}</span>
+        ${t.title ? `<span class="discret">${echappe(t.title.slice(0, 70))}</span>` : ""}
+      </div>
+      ${t.notes ? `<p class="discret">Note : ${echappe(t.notes)}</p>` : ""}
+      <div class="rangee" style="margin:12px 0">
+        <label>Passer à</label>
+        <select id="action-etape">${t.etapes_possibles.map(e => `<option>${echappe(e)}</option>`).join("")}</select>
+        <label>par</label>
+        <input type="text" id="action-par" placeholder="votre nom" size="12">
+        <input type="text" id="action-motif" placeholder="motif (consigné)" size="24">
+        <button class="primaire" id="action-avancer">Appliquer</button>
+        <span class="erreur-message" id="action-erreur"></span>
+      </div>
+      <div class="rangee" style="margin-bottom:14px">
+        <label>Assigner à</label>
+        <input type="text" id="assigner-personne" placeholder="personne (vide = libérer)" size="18">
+        <button id="action-assigner">Assigner</button>
+      </div>
+      <h2 style="margin-top:16px">Journal <span class="sous">en écriture seule — qui, quand, pourquoi</span></h2>
+      <div class="journal">${t.journal.map(e => `
+        <div><span class="quand">${echappe(e.at.slice(0, 19).replace("T", " "))}</span>
+          — <b>${echappe(e.actor)}</b> · ${echappe(e.action)}
+          ${e.to_stage ? `· ${echappe(e.from_stage || "")} → ${echappe(e.to_stage)}` : ""}
+          ${e.detail ? `<span class="discret">— ${echappe(e.detail)}</span>` : ""}</div>`).join("")}
+      </div>`;
+    fiche.hidden = false;
+    fiche.scrollIntoView({behavior: "smooth", block: "nearest"});
+
+    $("#action-avancer").addEventListener("click", async () => {
+      const donnees = new FormData();
+      donnees.set("etape", $("#action-etape").value);
+      donnees.set("par", $("#action-par").value.trim());
+      donnees.set("motif", $("#action-motif").value.trim());
+      try {
+        await api(`/api/suivi/${encodeURIComponent(t.ticket_id)}/avancer`, {method: "POST", body: donnees});
+        await chargerSuivi(); await ouvrirTicket(t.ticket_id); chargerBord();
+      } catch (e) { $("#action-erreur").textContent = e.message; }
+    });
+    $("#action-assigner").addEventListener("click", async () => {
+      const donnees = new FormData();
+      donnees.set("personne", $("#assigner-personne").value.trim());
+      try {
+        await api(`/api/suivi/${encodeURIComponent(t.ticket_id)}/assigner`, {method: "POST", body: donnees});
+        await chargerSuivi(); await ouvrirTicket(t.ticket_id);
+      } catch (e) { $("#action-erreur").textContent = e.message; }
+    });
+  } catch (e) {
+    $("#fiche-corps").innerHTML = `<p class="erreur-message">${echappe(e.message)}</p>`;
+    fiche.hidden = false;
+  }
+}
+
+/* ---------------------------- corpus ----------------------------------- */
+function pastilleValidation(v) {
+  const cls = v === "valide" ? "ok" : (v === "rejete" ? "erreur" : (v === "a_verifier" ? "alerte" : ""));
+  return `<span class="pastille ${cls}">${echappe(v || "en_attente")}</span>`;
+}
+
+async function chargerDocuments() {
+  const zone = $("#documents");
+  try {
+    const {documents} = await api("/api/documents");
+    if (!documents.length) { zone.innerHTML = '<p class="vide">Aucun document traité.</p>'; return; }
+    zone.innerHTML = `<table><thead><tr>
+        <th>Document</th><th>Catégorie</th><th>Type</th><th>Numéro</th><th>Date</th><th>Pages</th><th>Validation</th>
+      </tr></thead><tbody>` +
+      documents.map(d => `<tr class="cliquable" data-doc="${echappe(d.document_id)}">
+        <td>${echappe(d.document_id)}</td>
+        <td>${echappe(d.category || "—")}</td>
+        <td>${echappe(d.type || "—")}</td>
+        <td>${echappe(d.number || "—")}</td>
+        <td>${echappe(d.date || "—")}</td>
+        <td class="num">${d.pages ?? "—"}</td>
+        <td>${pastilleValidation(d.validation)}</td>
+      </tr>`).join("") + "</tbody></table>";
+    zone.querySelectorAll("tr.cliquable").forEach(tr =>
+      tr.addEventListener("click", () => ouvrirDocument(tr.dataset.doc)));
+  } catch (e) {
+    zone.innerHTML = `<p class="erreur-message">${echappe(e.message)}</p>`;
+  }
+}
+
+async function ouvrirDocument(id) {
+  const detail = $("#detail-document");
+  try {
+    const d = await api(`/api/documents/${encodeURIComponent(id)}`);
+    const doc = d.document;
+    $("#detail-titre").textContent = doc.title || id;
+    const articles = d.articles.map(a => `
+      <details>
+        <summary><b>Article ${echappe(a.article_number)}</b>
+          <span class="discret">p.${a.page_start}${a.title ? " · " + echappe(a.title) : ""}${a.chapter ? " › " + echappe(a.chapter) : ""}</span>
+        </summary>
+        <pre>${echappe(a.text)}</pre>
+      </details>`).join("");
+    const problemes = (d.issues || []).map(i =>
+      `<li><span class="pastille ${i.severity === "error" ? "erreur" : (i.severity === "warning" ? "alerte" : "")}">${echappe(i.severity)}</span> ${echappe(i.message)}</li>`).join("");
+    const pages = d.pages.map(p => `
+      <details>
+        <summary>Page ${p.page} <span class="discret">${p.char_count} caractères</span></summary>
+        <div class="colonnes">
+          <div><p class="discret">Texte brut extrait</p><pre>${echappe(p.raw_text || "")}</pre></div>
+          <div><p class="discret">Après nettoyage</p><pre>${echappe(p.text || "")}</pre></div>
+        </div>
+      </details>`).join("");
+    $("#detail-corps").innerHTML = `
+      <p class="discret">${echappe(doc.type || "?")} · n° ${echappe(doc.number || "—")} ·
+        ${echappe(doc.date || "—")} · catégorie ${echappe(doc.category || "—")} ·
+        ${pastilleValidation(doc.validation)}
+        ${d.quality ? ` · qualité ${(d.quality.score ?? 0).toFixed(2)}` : ""}</p>
+      ${problemes ? `<h2>Signalements</h2><ul>${problemes}</ul>` : ""}
+      <h2>Articles (${d.articles.length})</h2>${articles || '<p class="vide">Aucun article détecté.</p>'}
+      <h2 style="margin-top:16px">Pages <span class="sous">brut / nettoyé côte à côte</span></h2>${pages}`;
+    detail.hidden = false;
+    detail.scrollIntoView({behavior: "smooth", block: "nearest"});
+  } catch (e) {
+    $("#detail-corps").innerHTML = `<p class="erreur-message">${echappe(e.message)}</p>`;
+    detail.hidden = false;
+  }
+}
+
+/* ---------------------------- traitement ------------------------------- */
+$("#envoyer").addEventListener("click", async () => {
+  const champ = $("#fichier");
+  const message = $("#message-upload");
+  if (!champ.files.length) { message.textContent = "Choisissez un PDF."; return; }
+  const donnees = new FormData();
+  donnees.set("file", champ.files[0]);
+  $("#envoyer").disabled = true;
+  message.textContent = "Envoi…";
+  try {
+    const {job_id} = await api("/api/upload", {method: "POST", body: donnees});
+    message.textContent = "Traitement lancé.";
+    surveiller(job_id);
+  } catch (e) {
+    message.textContent = e.message;
   } finally {
-    $("envoyer").disabled = false;
+    $("#envoyer").disabled = false;
   }
 });
 
-function suivre(jobId) {
-  const timer = setInterval(async () => {
+async function surveiller(jobId) {
+  const zone = $("#taches");
+  const minuterie = setInterval(async () => {
     try {
-      const tache = await api(`/api/jobs/${jobId}`);
-      afficherTaches();
-      if (tache.status === "termine" || tache.status === "echoue") {
-        clearInterval(timer);
-        chargerDocuments();
-        chargerExports();
+      const job = await api(`/api/jobs/${jobId}`);
+      zone.innerHTML = `
+        <div class="rangee"><b>${echappe(job.filename)}</b>
+          <span class="discret">${echappe(job.status)} ${job.message ? "· " + echappe(job.message) : ""}</span></div>
+        <div class="barre-progression" style="margin-top:6px"><div style="width:${Math.round(100 * job.progress)}%"></div></div>`;
+      if (job.status === "termine" || job.status === "echoue") {
+        clearInterval(minuterie);
+        chargerBord(); chargerDocuments(); chargerSuivi();
       }
-    } catch { clearInterval(timer); }
+    } catch { clearInterval(minuterie); }
   }, 800);
 }
 
-async function afficherTaches() {
-  const { jobs } = await api("/api/jobs");
-  if (!jobs.length) { $("taches").innerHTML = ""; return; }
-  $("taches").innerHTML = jobs.map((t) => {
-    const pct = Math.round((t.progress || 0) * 100);
-    const classe = t.status === "echoue" ? "erreur" : t.status === "termine" ? "ok" : "";
-    const erreurs = t.errors.length
-      ? `<div class="discret" style="margin-top:4px">${t.errors.map(escape).join("<br>")}</div>` : "";
-    const bilan = t.summary.total
-      ? `<span class="discret"> — ${t.summary.succeeded} réussi(s),
-         ${t.summary.review_required} à vérifier, ${t.summary.failed} en échec</span>` : "";
-    return `<div style="margin-bottom:10px">
-      <div class="rangee">
-        <span class="pastille ${classe}">${t.status}</span>
-        <strong>${escape(t.filename)}</strong>
-        <span class="discret">${escape(t.stage)}</span>${bilan}
-      </div>
-      <div class="barre" style="margin-top:6px"><div style="width:${pct}%"></div></div>
-      ${erreurs}
-    </div>`;
-  }).join("");
-}
-
-// --- §22.4-6 : corpus, texte, articles, erreurs ---------------------------
-
-async function chargerDocuments() {
-  const { documents } = await api("/api/documents");
-  if (!documents.length) {
-    $("documents").innerHTML = `<p class="vide">Aucun document. Déposez un PDF ci-dessus,
-      ou lancez <code>python -m bldp pipeline ./input</code>.</p>`;
-    return;
-  }
-  $("documents").innerHTML = `<table>
-    <thead><tr><th>Identifiant</th><th>Titre</th><th>Type</th><th>Numéro</th>
-    <th>Date</th><th>Pages</th><th>Validation</th></tr></thead>
-    <tbody>${documents.map((d) => `
-      <tr class="cliquable" data-id="${escape(d.document_id)}">
-        <td>${escape(d.document_id)}</td>
-        <td>${escape(d.title || "—")}</td>
-        <td>${escape(d.type || "—")}</td>
-        <td>${escape(d.number || "—")}</td>
-        <td>${escape(d.date || "—")}</td>
-        <td>${d.pages || 0}</td>
-        <td><span class="pastille ${d.validation === "valide" ? "ok" : ""}">${escape(d.validation)}</span></td>
-      </tr>`).join("")}</tbody></table>`;
-  document.querySelectorAll("#documents tr.cliquable").forEach((ligne) =>
-    ligne.addEventListener("click", () => ouvrirDocument(ligne.dataset.id)));
-}
-
-async function ouvrirDocument(documentId) {
-  documentCourant = documentId;
-  detailCourant = await api(`/api/documents/${documentId}`);
-  const d = detailCourant.document;
-  const q = detailCourant.quality;
-
-  $("detail").hidden = false;
-  $("entete-document").innerHTML = `
-    <div><strong>${escape(d.title || documentId)}</strong></div>
-    <div class="discret">${escape(d.source_path || "")}</div>
-    <div class="discret">${escape(d.type || "?")} ${escape(d.number || "")} —
-      ${detailCourant.pages.length} page(s), ${detailCourant.articles.length} article(s)
-      ${q ? `— qualité ${q.score.toFixed(2)} (${escape(q.status)})` : ""}</div>`;
-
-  $("anomalies").innerHTML = detailCourant.issues.length
-    ? `<div style="margin-top:10px">${detailCourant.issues.map((i) =>
-        `<div class="pastille ${i.severity === "error" ? "erreur" : i.severity === "warning" ? "alerte" : ""}"
-         style="margin:2px 4px 2px 0">${escape(i.message)}</div>`).join("")}</div>`
-    : `<div class="discret" style="margin-top:8px">Aucune anomalie détectée — ce qui ne
-       garantit pas l'exactitude : vérifiez tout de même la comparaison ci-dessous.</div>`;
-
-  const select = $("choix-article");
-  select.innerHTML = detailCourant.articles.map((a, i) =>
-    `<option value="${i}">Article ${escape(a.article_number)} (p. ${a.page_start})</option>`).join("");
-  select.onchange = () => afficherArticle(Number(select.value));
-  if (detailCourant.articles.length) afficherArticle(0);
-  else { $("page-brute").textContent = $("page-nette").textContent = $("texte-article").textContent = "—"; }
-
-  $("detail").scrollIntoView({ behavior: "smooth" });
-}
-
-function afficherArticle(index) {
-  const article = detailCourant.articles[index];
-  if (!article) return;
-  const page = detailCourant.pages.find((p) => p.page === article.page_start);
-  $("page-brute").textContent = page ? (page.raw_text || "—") : "—";
-  $("page-nette").textContent = page ? (page.text || "—") : "—";
-  const contexte = [article.title, article.chapter, article.section].filter(Boolean).join(" > ");
-  $("texte-article").textContent =
-    (contexte ? contexte + "\n\n" : "") + `Article ${article.article_number}\n\n` + article.text;
-}
-
-// --- §22.7 : validation manuelle ------------------------------------------
-
-document.querySelectorAll("[data-decision]").forEach((bouton) =>
-  bouton.addEventListener("click", async () => {
-    if (!documentCourant) return;
-    const donnees = new FormData();
-    donnees.append("status", bouton.dataset.decision);
-    donnees.append("note", $("note").value);
-    try {
-      await api(`/api/documents/${documentCourant}/validation`, { method: "POST", body: donnees });
-      $("message-validation").textContent = `Enregistré : ${bouton.dataset.decision}`;
-      chargerDocuments();
-    } catch (erreur) {
-      $("message-validation").textContent = erreur.message;
-    }
-  }));
-
-// --- §22.8 : téléchargement -----------------------------------------------
-
+/* ---------------------------- exports ---------------------------------- */
 async function chargerExports() {
-  const { files } = await api("/api/exports");
-  $("exports").innerHTML = files.length
-    ? `<table><thead><tr><th>Fichier</th><th>Taille</th><th></th></tr></thead>
-       <tbody>${files.map((f) => `<tr>
-         <td>${escape(f.name)}</td>
-         <td class="discret">${(f.size_bytes / 1024).toFixed(1)} Kio</td>
-         <td><a href="/api/exports/${encodeURIComponent(f.name)}">Télécharger</a></td>
-       </tr>`).join("")}</tbody></table>`
-    : `<p class="vide">Aucun export. Lancez un traitement pour en produire.</p>`;
+  const zone = $("#exports");
+  try {
+    const {exports} = await api("/api/exports");
+    if (!exports.length) { zone.innerHTML = '<p class="vide">Aucun export encore produit.</p>'; return; }
+    zone.innerHTML = "<ul>" + exports.map(e =>
+      `<li><a href="/api/exports/${encodeURIComponent(e.name)}">${echappe(e.name)}</a>
+        <span class="discret">${e.size_bytes} octets</span></li>`).join("") + "</ul>";
+  } catch (e) {
+    zone.innerHTML = `<p class="erreur-message">${echappe(e.message)}</p>`;
+  }
 }
 
-function escape(valeur) {
-  return String(valeur ?? "").replace(/[&<>"']/g,
-    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
-}
-
+chargerBord();
+chargerSuivi();
 chargerDocuments();
 chargerExports();
-afficherTaches();
 </script>
 </body>
 </html>

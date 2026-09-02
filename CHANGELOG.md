@@ -5,6 +5,96 @@ projet adhère au [versionnage sémantique](https://semver.org/lang/fr/).
 
 ## [Non publié]
 
+### Ajouté — collation assistée par un modèle de langue
+
+Un modèle compare l'**image de la page d'origine** au texte que la chaîne en a
+tiré, et rapporte les écarts. La pièce importante n'est pas le modèle : c'est
+ce qui l'encadre.
+
+- **L'image fait foi, et elle est envoyée avec le texte**
+  (`bldp/core/review/page_images.py`). Sans elle, le modèle comparerait le
+  texte des articles au texte des pages — or les deux sortent de la *même*
+  extraction : là où l'OCR s'est trompé, il s'est trompé aux deux endroits, et
+  toute « correction » serait déduite plutôt que lue. Un document dont le PDF
+  d'origine a disparu est donc **écarté**, pas relu.
+- **Chaque correction déclare la nature de sa preuve** — `image` ou
+  `texte_ocr` — et les contrôles en dépendent
+  (`bldp/core/review/corrections.py`). Une correction qui invoque l'image sans
+  qu'aucune image ait été transmise est refusée : un modèle qui cite une
+  référence qu'il n'a pas reçue ne lit pas. Une lecture sur image doit citer
+  une page existante, qui porte l'article visé.
+- **Le seuil de fidélité a été calibré sur le corpus, pas choisi au jugé.**
+  Sur un scan très dégradé, une transcription pourtant *exacte* n'atteint que
+  0,56 de fidélité ; le seuil initial (0,92, réglé sur des dégâts légers)
+  aurait rejeté précisément les documents qui ont le plus besoin d'être relus.
+  La mesure combine similarité séquentielle et chevauchement de n-grammes,
+  chacune couvrant le régime où l'autre est aveugle. Repères mesurés :
+  transcription exacte 0,56 · invention plausible 0,40 · reformulation 0,35.
+  Figés dans `TestCalibrageDeLaFidelite`.
+- **Un numéro lu sur l'image doit s'inscrire dans la suite de ses voisins** :
+  « Article I » → « 8 » entre le 7 et le 9 passe, « → 42 » est signalé.
+- Ce qui ne passe pas n'est pas jeté : c'est **signalé avec la lecture
+  proposée**, et un humain tranche. Rétablir une ligne manquée par l'OCR et
+  inventer une ligne sont mécaniquement indiscernables — les deux sont donc
+  refusées et signalées, ce qui est la bonne réponse.
+- Corriger la majorité des articles d'un document déclenche un refus
+  d'ensemble : ce n'est plus une relecture, c'est une réécriture.
+- **La relecture ne conclut jamais.** Nouvelle étape de suivi `revue_ia`
+  (badge `[IA]`), qui s'intercale entre `traite` et la décision humaine. Un
+  modèle qui se tromperait sur un article de loi le ferait de façon plausible,
+  donc invisible : la signature reste humaine (§16). `ai_review.can_validate`
+  permet de lever cette réserve, sciemment.
+- **Rien ne part sans consentement explicite.** `python -m bldp relire` annonce
+  le lot, ce qu'il représente et ce qu'il coûtera — et n'appelle rien. Il faut
+  `--oui` pour que le texte quitte la machine, en plus des deux interrupteurs
+  de configuration (`privacy.allow_external_calls` et `ai_review.enabled`). La
+  clé se lit dans `$ANTHROPIC_API_KEY`, jamais dans un fichier. L'annonce
+  précise le nombre d'images et rappelle qu'une image de page porte aussi les
+  en-têtes, tampons et signatures de l'original.
+- Un document trop long est **refusé plutôt que tronqué** : relire une partie
+  et conclure sur l'ensemble serait un faux diagnostic.
+- Le résultat porte `collationne_sur_image` : un « conforme » rendu sans image
+  ne vaut pas celui d'une vraie collation, et ne doit pas s'en réclamer.
+- `Page.raw_text` n'est jamais modifié : toute correction reste contestable
+  contre l'original (§33).
+- Nouvelle route `/api/relecture` — en lecture seule. L'interface montre l'état
+  et le coût d'un lot ; elle ne peut pas le lancer. Un clic n'est pas un
+  consentement éclairé à envoyer des documents hors de la machine.
+- Nouvelle dépendance optionnelle : `pip install -e ".[review]"`.
+
+### Modifié — interface web refondue
+
+- **Tableau de bord** : tuiles de synthèse (documents, pages, articles,
+  alinéas, à vérifier), répartition par catégorie et avancement du suivi —
+  barres à teinte unique, valeurs toujours affichées, badges d'étape portant
+  marqueur *et* libellé (jamais la couleur seule).
+- **Onglet Suivi** : file de travail filtrable par étape, fiche de ticket avec
+  journal complet, et actions (avancer, assigner) transmises au registre — qui
+  peut refuser ; le refus est affiché tel quel, jamais contourné. Valider
+  depuis l'interface exige toujours un nom (§16).
+- **Onglet Corpus** : catégorie et type visibles, détail avec articles
+  dépliables et pages brut/nettoyé côte à côte.
+- Navigation par onglets, thème sombre suivant la préférence du système.
+  Toujours aucune ressource externe (§27).
+- Nouveaux points d'API : `/api/stats`, `/api/suivi`, `/api/suivi/{ref}`,
+  `/api/suivi/{ref}/avancer`, `/api/suivi/{ref}/assigner`.
+
+### Ajouté — traitement par lots
+
+- **Sortie par catégorie** (`export.by_category`, actif par défaut) : chaque
+  document traité est rangé dans `data/traites/<categorie>/` — une fiche JSON
+  complète et le texte nettoyé. Les exports globaux restent la référence ; un
+  document reclassé voit ses anciens fichiers retirés de la catégorie
+  précédente.
+
+### Corrigé
+
+- **Traitement par lot classé « autres »** : `pipeline input/arretes` scanne
+  directement le dossier de la catégorie, si bien qu'aucun sous-dossier ne
+  portait le nom attendu — tout le lot tombait dans « autres ». Le nom du
+  dossier scanné compte désormais, un sous-dossier plus proche gardant la
+  priorité.
+
 ### Ajouté — registre de suivi des documents
 
 - **Tickets, étapes et journal** (`bldp suivi`). Chaque document reçoit un

@@ -55,6 +55,7 @@ class Stage(str, enum.Enum):
     EN_COURS = "en_cours"
     TRAITE = "traite"
     A_VERIFIER = "a_verifier"
+    REVUE_IA = "revue_ia"
     EN_REVUE = "en_revue"
     VALIDE = "valide"
     REJETE = "rejete"
@@ -77,9 +78,21 @@ ALLOWED_TRANSITIONS: dict[Stage, frozenset[Stage]] = {
         {Stage.EN_COURS, Stage.TRAITE, Stage.A_VERIFIER, Stage.REJETE}
     ),
     Stage.EN_COURS: frozenset({Stage.TRAITE, Stage.A_VERIFIER, Stage.REJETE, Stage.IMPORTE}),
-    Stage.TRAITE: frozenset({Stage.A_VERIFIER, Stage.EN_REVUE, Stage.VALIDE, Stage.REJETE}),
-    Stage.A_VERIFIER: frozenset({Stage.EN_REVUE, Stage.VALIDE, Stage.REJETE, Stage.TRAITE}),
-    Stage.EN_REVUE: frozenset({Stage.VALIDE, Stage.REJETE, Stage.A_VERIFIER}),
+    Stage.TRAITE: frozenset(
+        {Stage.A_VERIFIER, Stage.REVUE_IA, Stage.EN_REVUE, Stage.VALIDE, Stage.REJETE}
+    ),
+    # « revue_ia » s'intercale entre le traitement et la decision humaine : un
+    # document relu par un modele en sait plus qu'un document simplement
+    # traite, et moins qu'un document valide par quelqu'un.
+    Stage.A_VERIFIER: frozenset(
+        {Stage.REVUE_IA, Stage.EN_REVUE, Stage.VALIDE, Stage.REJETE, Stage.TRAITE}
+    ),
+    Stage.REVUE_IA: frozenset(
+        {Stage.EN_REVUE, Stage.VALIDE, Stage.REJETE, Stage.A_VERIFIER}
+    ),
+    Stage.EN_REVUE: frozenset(
+        {Stage.VALIDE, Stage.REJETE, Stage.A_VERIFIER, Stage.REVUE_IA}
+    ),
     Stage.VALIDE: frozenset({Stage.ARCHIVE, Stage.A_VERIFIER}),
     Stage.REJETE: frozenset({Stage.A_VERIFIER, Stage.ARCHIVE}),
     Stage.ARCHIVE: frozenset({Stage.A_VERIFIER}),
@@ -106,6 +119,7 @@ STAGE_BADGES: dict[Stage, tuple[str, str]] = {
     Stage.EN_COURS: ("[~]", "en cours"),
     Stage.TRAITE: ("[*]", "traité"),
     Stage.A_VERIFIER: ("[!]", "à vérifier"),
+    Stage.REVUE_IA: ("[IA]", "relu par IA"),
     Stage.EN_REVUE: ("[?]", "en revue"),
     Stage.VALIDE: ("[V]", "validé"),
     Stage.REJETE: ("[X]", "rejeté"),
@@ -570,7 +584,7 @@ class TrackingRegistry:
 
         # Une décision humaine déjà prise n'est jamais défaite par une
         # nouvelle exécution : on enregistre le passage, sans toucher l'étape.
-        if ticket.is_settled or ticket.stage is Stage.EN_REVUE:
+        if ticket.is_settled or ticket.stage in {Stage.EN_REVUE, Stage.REVUE_IA}:
             self._update_quality(ticket.ticket_id, score, document)
             self._log(
                 ticket.ticket_id, actor, "retraitement",

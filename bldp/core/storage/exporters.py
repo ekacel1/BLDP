@@ -251,6 +251,57 @@ def export_run_report(report: Any, path: str | Path) -> Path:
     return write_json(path, payload)
 
 
+def export_by_category(
+    documents: Sequence[Document], directory: str | Path
+) -> Path:
+    """Range chaque document traité dans un sous-dossier par catégorie.
+
+    Produit, pour chaque document ::
+
+        data/traites/
+            accords/
+                accord_2023_150.json   (fiche complète : métadonnées, articles)
+                accord_2023_150.txt    (texte nettoyé, page par page)
+            arretes/
+                ...
+
+    C'est la vue « par lot » du corpus : les exports globaux (JSONL, SQLite)
+    restent la référence pour l'exploitation, mais un relecteur qui travaille
+    catégorie par catégorie retrouve ici exactement les documents de son lot,
+    sans requête. Les fichiers sont **réécrits** à chaque exécution : la base
+    SQLite reste la seule mémoire des décisions.
+    """
+    base = Path(directory)
+    for document in documents:
+        category = (document.source.category or "autres") if document.source else "autres"
+        folder = base / category
+        folder.mkdir(parents=True, exist_ok=True)
+
+        # Si un passage précédent avait rangé ce document dans une autre
+        # catégorie, ses anciens fichiers y resteraient : deux copies du même
+        # document dans deux dossiers, dont une périmée. On ne retire que les
+        # fichiers portant exactement son identifiant.
+        for stale in base.glob(f"*/{document.document_id}.*"):
+            if stale.parent != folder:
+                stale.unlink(missing_ok=True)
+
+        record = document_record(document)
+        write_json(folder / f"{document.document_id}.json", record)
+
+        pages = document.pages or []
+        texte = "\n\n".join(
+            f"--- page {page.page} ---\n{page.text}" for page in pages
+        )
+        (folder / f"{document.document_id}.txt").write_text(texte, encoding="utf-8")
+
+    logger.info(
+        "Documents traités rangés par catégorie dans %s (%d document(s)).",
+        base,
+        len(documents),
+    )
+    return base
+
+
 def export_all(
     documents: Sequence[Document],
     config: Config,
@@ -302,6 +353,11 @@ def export_all(
             if chunks:
                 database.save_chunks(chunks)
         produced["sqlite"] = str(database_path)
+
+    if bool(config.get("export.by_category", True)):
+        produced["traites"] = str(
+            export_by_category(documents, config.path("traites"))
+        )
 
     if "parquet" in formats:
         logger.warning(

@@ -18,6 +18,8 @@ paths:
   validated: "data/validated"
   embeddings: "data/embeddings"
   exports: "data/exports"
+  # Documents traités, rangés par catégorie (une fiche JSON + le texte).
+  traites: "data/traites"
   logs: "logs"
   database: "data/exports/legal_database.sqlite"
 
@@ -174,6 +176,10 @@ vectorstore:
   metric: "cosine"
 
 export:
+  # Ranger chaque document traité dans data/traites/<categorie>/ :
+  # une fiche JSON complète et le texte nettoyé. C'est la vue « par
+  # lot » du corpus, à côté des exports globaux.
+  by_category: true
   formats: ["jsonl", "sqlite", "json"]
   pretty_json: true
   # Inclure le texte intégral des pages dans les exports
@@ -189,3 +195,47 @@ logging:
 privacy:
   # Aucun document ne quitte la machine tant que ceci vaut false.
   allow_external_calls: false
+
+# --- Relecture assistee par modele de langue --------------------------------
+# Un modele relit le texte extrait et propose des corrections, chacune
+# verifiee contre le texte source avant d'etre appliquee.
+#
+# ATTENTION : relire avec un modele distant envoie le texte des documents hors
+# de cette machine. Les DEUX interrupteurs doivent etre leves — celui-ci et
+# privacy.allow_external_calls — et la cle se lit dans $ANTHROPIC_API_KEY,
+# jamais dans ce fichier.
+ai_review:
+  enabled: false
+  model: "claude-opus-5"
+  # --- Collation sur l'image de l'original ---------------------------------
+  # C'est le point central du dispositif. Sans image, le modele compare le
+  # texte des articles au texte des pages : les deux sortent de la MEME
+  # extraction, donc la ou l'OCR s'est trompe il s'est trompe aux deux
+  # endroits. Il ne reste alors au modele qu'a deduire — c'est precisement ce
+  # qu'on refuse. L'image de la page est la seule reference qui ne vienne pas
+  # de l'OCR.
+  send_page_images: true
+  # Un document dont le PDF d'origine a disparu est ECARTE plutot que relu
+  # sans reference. Passer a false l'accepte quand meme, en mode degrade :
+  # le modele ne pourra alors corriger que ce que le texte prouve lui-meme.
+  require_page_images: true
+  # Cote le plus long du rendu, en pixels. 1568 est la limite au-dela de
+  # laquelle l'API redimensionne : rendre plus large coute sans rien apporter.
+  image_max_edge: 1568
+  image_quality: 85
+  # Au-dela, le document est ecarte : relire une partie d'un code et conclure
+  # sur l'ensemble serait un faux diagnostic.
+  max_image_pages: 40
+  # Profondeur de raisonnement : la relecture juridique n'est pas l'endroit
+  # ou economiser. low | medium | high | xhigh | max
+  effort: "high"
+  max_tokens: 16000
+  timeout_seconds: 300
+  max_retries: 3
+  # Au-dela, un document est refuse plutot que tronque : relire une partie et
+  # conclure sur le tout serait un faux diagnostic.
+  max_chars: 120000
+  # La relecture peut-elle valider seule ? Non par defaut : un modele qui se
+  # tromperait sur un article de loi le ferait de facon plausible, donc
+  # invisible. Elle mene a « revue_ia » ; la signature reste humaine (§16).
+  can_validate: false

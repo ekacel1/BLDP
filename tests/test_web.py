@@ -282,3 +282,48 @@ class TestDownloads:
 
     def test_empty_exports_directory(self, client):
         assert client.get("/api/exports").json()["files"] == []
+
+
+# ---------------------------------------------------------------------------
+# Relecture assistée : la route informe, elle ne déclenche rien
+# ---------------------------------------------------------------------------
+
+
+class TestRelectureRoute:
+    """Le navigateur peut voir l'état de la relecture, jamais la lancer.
+
+    Un clic n'est pas un consentement éclairé à envoyer des documents hors de
+    la machine (§27). La décision revient au terminal, où le lot et son coût
+    sont annoncés avant tout appel.
+    """
+
+    def test_l_etat_est_consultable(self, client_with_data):
+        etat = client_with_data.get("/api/relecture").json()
+        assert etat["disponible"] is False
+        assert etat["obstacles"], "l'indisponibilité doit être expliquée"
+        assert "relire" in etat["commande"]
+
+    def test_le_lot_est_chiffre_avant_tout_appel(self, client_with_data):
+        etat = client_with_data.get("/api/relecture").json()
+        assert etat["documents"]
+        assert etat["cout_estime_usd"] <= etat["cout_plafond_usd"]
+
+    def test_aucune_route_ne_lance_une_relecture(self, client_with_data):
+        """Il n'existe pas de POST qui ferait sortir un document."""
+        routes = {
+            (r.path, method)
+            for r in client_with_data.app.routes
+            for method in getattr(r, "methods", set())
+        }
+        assert not [
+            chemin for chemin, methode in routes
+            if "relecture" in chemin and methode not in {"GET", "HEAD"}
+        ]
+
+    def test_une_etape_inconnue_est_refusee(self, client_with_data):
+        assert client_with_data.get("/api/relecture?etape=inventee").status_code == 400
+
+    def test_sans_corpus_la_route_repond_quand_meme(self, client):
+        etat = client.get("/api/relecture").json()
+        assert etat["documents"] == []
+        assert etat["obstacles"]
