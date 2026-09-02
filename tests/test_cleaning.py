@@ -130,6 +130,39 @@ class TestOcrFixes:
         text, _ = apply_ocr_fixes("OBLIGATION du travailleur")
         assert text == "OBLIGATION du travailleur"
 
+    @pytest.mark.parametrize(
+        "abime",
+        ["Aticle 3", "Atticle 22", "Atlicle 49", "Aficle 7", "ATICLE 12"],
+    )
+    def test_le_r_avale_d_article_est_repare(self, abime):
+        """« Aticle » et ses variantes : le « r » que l'OCR laisse tomber.
+
+        Mesuré sur la loi 2024-09 du corpus SGG, dont l'extraction est passée
+        de 37 à 51 articles une fois cette famille couverte : 14 articles
+        étaient invisibles au parseur pour cette seule raison. Les règles
+        voisines exigent toutes un « r » ou un « d » en deuxième position et
+        laissaient donc passer ces formes.
+        """
+        texte, corrections = apply_ocr_fixes(abime)
+        assert texte.lower().startswith("article")
+        assert corrections >= 1
+
+    @pytest.mark.parametrize(
+        "intact",
+        [
+            "Articulation du texte",
+            "Artisan local",
+            "Artifice",
+            "Atelier de travail",
+            "Afficher le cycle",
+            "Alicante",
+        ],
+    )
+    def test_le_motif_n_atteint_aucun_mot_francais(self, intact):
+        """Un motif large sur un mot fréquent doit être borné strictement."""
+        texte, corrections = apply_ocr_fixes(intact)
+        assert texte == intact and corrections == 0
+
 
 class TestPageNumbers:
     @pytest.mark.parametrize(

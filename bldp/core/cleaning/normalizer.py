@@ -138,6 +138,18 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bArti(?:cte|de|cie|clc|cle\.|ele)\b"), "Article"),
     (re.compile(r"(?!Article\b)\bAr[tU][Ui]?cle\b"), "Article"),
     (re.compile(r"\bAdi[cd]le\b"), "Article"),
+    # Le « r » avalé : « Aticle », « Atticle », « Atlicle », « Aficle ».
+    #
+    # Mesuré sur la loi 2024-09 du corpus SGG : 17 en-têtes sur 54 portaient
+    # l'une de ces formes, soit **27 % des articles du document** invisibles
+    # au parseur. Les règles précédentes exigent toutes un « r » ou un « d »
+    # en deuxième position et les laissaient donc passer.
+    #
+    # La forme commune est « A », une ou deux lettres hautes et étroites là
+    # où le « rt » a fondu, puis « icle ». Le motif reste borné par \b et
+    # n'atteint aucun mot français : aucun n'a cette forme hors « Article ».
+    (re.compile(r"(?!Article\b)\bA[tflr]{1,2}[il1]cle\b"), "Article"),
+    (re.compile(r"(?!ARTICLE\b)\bA[TFLR]{1,2}[IL1]CLE\b"), "ARTICLE"),
     (re.compile(r"\bARTI(?:CTE|DE|CIE|CLC|ELE)\b"), "ARTICLE"),
     # « ARTICI E » -> « ARTICLE »
     (re.compile(r"(?!ARTICLE\b)\bARTIC[L1I|]\s?E\b"), "ARTICLE"),
