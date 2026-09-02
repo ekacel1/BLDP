@@ -456,3 +456,179 @@ class TestCliIntegrity:
         from bldp.cli import build_parser
 
         assert build_parser() is not None
+
+
+# ---------------------------------------------------------------------------
+# Repli OCR : une extraction muette est une extraction ratée
+# ---------------------------------------------------------------------------
+
+
+class TestRepliOcr:
+    """Le cas le plus coûteux du corpus, et le seul qui se répare gratuitement.
+
+    Mesuré sur le lot 1 du corpus SGG : 559 documents sans aucun article, dont
+    552 passés par la voie native. Leur PDF porte une couche texte issue d'un
+    OCR d'époque, du genre ``ARTICIS Ier`` ou ``A,rUi:cfJE 5.-``. Le
+    classifieur voit du texte, conclut « OCR non nécessaire », et le contenu
+    reste sur l'image.
+    """
+
+    def _document(self, articles, warnings=None):
+        from bldp.models import DocumentMetadata
+
+        doc = type("D", (), {})()
+        doc.document_id = "loi_test"
+        doc.metadata = DocumentMetadata(document_id="loi_test", warnings=warnings or [])
+        doc.articles = articles
+        doc.structure = []
+        doc.errors = []
+        doc.extraction = None
+        doc.text_hash = ""
+        return doc
+
+    def _analyse(self, articles):
+        return type("P", (), {"articles": articles, "structure": [], "warnings": []})()
+
+    def test_un_document_avec_articles_n_est_pas_relu(self, config, monkeypatch):
+        """Le repli ne coûte rien quand il ne sert à rien."""
+        import bldp.pipeline as pipeline_module
+
+        appels = []
+        monkeypatch.setattr(
+            pipeline_module, "extract_with_route",
+            lambda *a, **k: appels.append(1),
+        )
+        origine = self._analyse(["article 1"])
+        pages, resultat = pipeline_module._repli_ocr_si_aucun_article(
+            self._document(["article 1"]), _source(), Path("/x.pdf"), "native",
+            config, None, None, ["pages"], origine,
+        )
+        assert appels == [], "aucune seconde lecture ne doit être tentée"
+        assert resultat is origine
+
+    def test_un_document_deja_ocrise_n_est_pas_relu_deux_fois(self, config, monkeypatch):
+        import bldp.pipeline as pipeline_module
+
+        appels = []
+        monkeypatch.setattr(
+            pipeline_module, "extract_with_route",
+            lambda *a, **k: appels.append(1),
+        )
+        pipeline_module._repli_ocr_si_aucun_article(
+            self._document([]), _source(), Path("/x.pdf"), "ocr",
+            config, None, None, ["pages"], self._analyse([]),
+        )
+        assert appels == [], "un document déjà OCRisé ne se relit pas en boucle"
+
+    def test_le_repli_se_desactive(self, config, monkeypatch):
+        import bldp.pipeline as pipeline_module
+
+        appels = []
+        monkeypatch.setattr(
+            pipeline_module, "extract_with_route",
+            lambda *a, **k: appels.append(1),
+        )
+        conf = config.with_overrides(
+            {"extraction": {"ocr_fallback_when_no_article": False}}
+        )
+        pipeline_module._repli_ocr_si_aucun_article(
+            self._document([]), _source(), Path("/x.pdf"), "native",
+            conf, None, None, ["pages"], self._analyse([]),
+        )
+        assert appels == []
+
+    def test_une_seconde_lecture_meilleure_est_retenue(self, config, monkeypatch):
+        """Le cas nominal : l'OCR récupère ce que la couche texte cachait."""
+        import bldp.pipeline as pipeline_module
+
+        extraction = type("E", (), {"pages": ["p1"], "errors": []})()
+        monkeypatch.setattr(
+            pipeline_module, "extract_with_route", lambda *a, **k: extraction
+        )
+        monkeypatch.setattr(
+            pipeline_module, "clean_pages", lambda *a, **k: (["p1 propre"], None)
+        )
+        monkeypatch.setattr(
+            pipeline_module, "parse_document",
+            lambda *a, **k: self._analyse(["art 1", "art 2", "art 3"]),
+        )
+        monkeypatch.setattr(pipeline_module, "document_text_hash", lambda d: "h")
+
+        document = self._document([])
+        pages, resultat = pipeline_module._repli_ocr_si_aucun_article(
+            document, _source(), Path("/x.pdf"), "native",
+            config, None, None, ["ancien"], self._analyse([]),
+        )
+        assert len(resultat.articles) == 3
+        assert document.articles == ["art 1", "art 2", "art 3"]
+        assert pages == ["p1 propre"]
+        assert any("relu en OCR" in w for w in document.metadata.warnings)
+
+    def test_une_seconde_lecture_moins_bonne_est_ecartee(self, config, monkeypatch):
+        """Un OCR ne doit jamais écraser un texte natif qui faisait mieux."""
+        import bldp.pipeline as pipeline_module
+
+        monkeypatch.setattr(
+            pipeline_module, "extract_with_route",
+            lambda *a, **k: type("E", (), {"pages": ["p"], "errors": []})(),
+        )
+        monkeypatch.setattr(pipeline_module, "clean_pages", lambda *a, **k: (["p"], None))
+        monkeypatch.setattr(
+            pipeline_module, "parse_document", lambda *a, **k: self._analyse([])
+        )
+
+        document = self._document([])
+        origine = self._analyse([])
+        pages, resultat = pipeline_module._repli_ocr_si_aucun_article(
+            document, _source(), Path("/x.pdf"), "native",
+            config, None, None, ["ancien"], origine,
+        )
+        assert resultat is origine
+        assert pages == ["ancien"]
+        assert any("y compris après une seconde lecture" in w
+                   for w in document.metadata.warnings)
+
+    def test_un_echec_de_seconde_lecture_laisse_le_document_intact(
+        self, config, monkeypatch
+    ):
+        """§26 : le repli est un supplément, jamais une condition."""
+        import bldp.pipeline as pipeline_module
+        from bldp.core.extraction.pymupdf_extractor import ExtractionError
+
+        def casse(*a, **k):
+            raise ExtractionError("tesseract absent")
+
+        monkeypatch.setattr(pipeline_module, "extract_with_route", casse)
+        document = self._document([])
+        origine = self._analyse([])
+        pages, resultat = pipeline_module._repli_ocr_si_aucun_article(
+            document, _source(), Path("/x.pdf"), "native",
+            config, None, None, ["ancien"], origine,
+        )
+        assert resultat is origine
+        assert pages == ["ancien"]
+        assert any("repli OCR impossible" in w for w in document.metadata.warnings)
+
+    def test_sans_ocr_disponible_le_repli_ne_tente_rien(self, config, monkeypatch):
+        import bldp.pipeline as pipeline_module
+
+        appels = []
+        monkeypatch.setattr(
+            pipeline_module, "extract_with_route", lambda *a, **k: appels.append(1)
+        )
+        conf = config.with_overrides({"ocr": {"enabled": False}})
+        pipeline_module._repli_ocr_si_aucun_article(
+            self._document([]), _source(), Path("/x.pdf"), "native",
+            conf, None, None, ["pages"], self._analyse([]),
+        )
+        assert appels == []
+
+
+def _source():
+    from bldp.models import SourceFile
+    from bldp.utils import utc_now_iso
+
+    return SourceFile(
+        document_id="loi_test", source_path="/x.pdf", filename="x.pdf",
+        extension=".pdf", size_bytes=1, file_hash="abc", ingested_at=utc_now_iso(),
+    )

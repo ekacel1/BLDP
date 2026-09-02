@@ -63,6 +63,16 @@ crawl:
 
 # --- Module 3 : extraction ---------------------------------------------------
 extraction:
+  # Une extraction native qui ne produit AUCUN article est une extraction
+  # ratee : un texte juridique a des articles. Le cas se produit quand le PDF
+  # porte deja une couche texte, mais illisible — un OCR d'epoque. Le
+  # classifieur voit du texte, conclut « OCR non necessaire », et le vrai
+  # contenu reste sur l'image.
+  #
+  # Mesure sur le lot 1 du corpus SGG : 559 documents sans article, dont 552
+  # passes par la voie native. La seconde lecture n'est retenue que si elle
+  # produit PLUS d'articles que la premiere.
+  ocr_fallback_when_no_article: true
   # Remettre les blocs de texte dans l'ordre de lecture (tri par position).
   # L'ordre stocké dans un PDF numérisé ne suit pas toujours la lecture : les
   # articles ressortaient alors dans le désordre. À désactiver pour un document

@@ -180,6 +180,11 @@ def process_source(
     for warning in parse_result.warnings:
         document.metadata.warnings.append(f"parsing : {warning}")
 
+    # -- Repli : une extraction muette est une extraction ratée -------------
+    cleaned, parse_result = _repli_ocr_si_aucun_article(
+        document, source, path, route, config, ruleset, analysis, cleaned, parse_result
+    )
+
     # -- Module 7 : métadonnées ---------------------------------------------
     pdf_metadata: dict = {}
     try:
@@ -202,6 +207,97 @@ def process_source(
     _confronter_au_catalogue(document, source, catalogue)
 
     return document
+
+
+def _repli_ocr_si_aucun_article(
+    document: Document,
+    source: SourceFile,
+    path: Path,
+    route: str,
+    config: Config,
+    ruleset: Any,
+    analysis: Any,
+    cleaned: Any,
+    parse_result: Any,
+) -> tuple[Any, Any]:
+    """Refait l'extraction en OCR quand la voie native n'a rien donné.
+
+    Un texte juridique **a** des articles. Une loi, un décret, une ordonnance
+    dont on ne tire aucun article n'est pas un document sans articles : c'est
+    un document mal lu.
+
+    Le cas se produit quand le PDF porte déjà une couche texte, mais illisible
+    — un OCR d'époque, souvent. Le classifieur voit du texte, conclut « OCR
+    non nécessaire », et le vrai contenu reste sur l'image. Mesuré sur le
+    lot 1 du corpus SGG : **559 documents sans aucun article, dont 552 passés
+    par la voie native.** Les en-têtes y ressemblent à ``ARTICIS Ier``,
+    ``IRTI0üE J.-``, ``A,rUi:cfJE 5.-`` : aucune règle de correction ne les
+    rattrape, seule une relecture de l'image le peut.
+
+    On ne remplace jamais à l'aveugle : la seconde lecture n'est retenue que
+    si elle produit **plus** d'articles que la première. Un OCR qui ferait
+    moins bien que le texte natif ne doit pas l'écraser.
+
+    Returns:
+        ``(pages nettoyées, résultat d'analyse)`` — ceux du repli s'il a
+        gagné, ceux d'origine sinon.
+    """
+    if not config.get("extraction.ocr_fallback_when_no_article", True):
+        return cleaned, parse_result
+    if parse_result.articles or route == "ocr":
+        return cleaned, parse_result
+    if not config.get("ocr.enabled", True):
+        return cleaned, parse_result
+
+    logger.info(
+        "%s : aucun article par la voie native — seconde lecture en OCR.",
+        source.document_id,
+    )
+    try:
+        seconde = extract_with_route(
+            path, source.document_id, "ocr", config,
+            ocr_pages=None, source_file=source.filename,
+        )
+    except ExtractionError as exc:
+        # Le repli est un supplément, jamais une condition : son échec laisse
+        # le document exactement dans l'état où la première lecture l'a mis.
+        logger.warning("%s : seconde lecture impossible (%s)", source.document_id, exc)
+        document.metadata.warnings.append(f"repli OCR impossible : {exc}")
+        return cleaned, parse_result
+
+    pages_ocr, _ = clean_pages(seconde.pages, config, source.document_id)
+    analyse_ocr = parse_document(
+        pages_ocr, source.document_id, config, ruleset, source.filename
+    )
+
+    if len(analyse_ocr.articles) <= len(parse_result.articles):
+        logger.info(
+            "%s : la seconde lecture n'apporte rien (%d article(s)) — "
+            "la première est conservée.",
+            source.document_id, len(analyse_ocr.articles),
+        )
+        document.metadata.warnings.append(
+            "aucun article détecté, y compris après une seconde lecture en OCR"
+        )
+        return cleaned, parse_result
+
+    logger.info(
+        "%s : seconde lecture retenue — %d article(s) récupéré(s).",
+        source.document_id, len(analyse_ocr.articles),
+    )
+    seconde.pages = pages_ocr
+    document.extraction = seconde
+    document.errors.extend(seconde.errors)
+    document.structure = analyse_ocr.structure
+    document.articles = analyse_ocr.articles
+    document.text_hash = document_text_hash(document)
+    for warning in analyse_ocr.warnings:
+        document.metadata.warnings.append(f"parsing (repli OCR) : {warning}")
+    document.metadata.warnings.append(
+        "extraction native muette : le document a été relu en OCR, "
+        f"{len(analyse_ocr.articles)} article(s) récupéré(s)"
+    )
+    return pages_ocr, analyse_ocr
 
 
 def _load_catalogue_or_warn(config: Config) -> Any:
