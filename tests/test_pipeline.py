@@ -203,11 +203,11 @@ class TestErrorIsolation:
         original = pipeline_module.process_source
         calls = {"n": 0}
 
-        def flaky(source, cfg, ruleset=None, profile=None):
+        def flaky(source, *args, **kwargs):
             calls["n"] += 1
             if calls["n"] == 2:
                 raise RuntimeError("panne inattendue")
-            return original(source, cfg, ruleset, profile)
+            return original(source, *args, **kwargs)
 
         monkeypatch.setattr(pipeline_module, "process_source", flaky)
         result = run_pipeline(corpus, config)

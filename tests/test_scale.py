@@ -195,10 +195,10 @@ class TestWorkers:
 
         original = pipeline_module.process_source
 
-        def flaky(source, cfg, ruleset=None, profile=None):
+        def flaky(source, *args, **kwargs):
             if source.document_id == "loi_c":
                 raise RuntimeError("panne simulée")
-            return original(source, cfg, ruleset, profile)
+            return original(source, *args, **kwargs)
 
         monkeypatch.setattr(pipeline_module, "process_source", flaky)
         result = run_pipeline(corpus, config, workers=4)
@@ -229,9 +229,9 @@ class TestWorkers:
 
         original = pipeline_module.process_source
 
-        def espion(source, cfg, ruleset=None, profile=None):
+        def espion(source, cfg, *args, **kwargs):
             vus.append(int(cfg.get("ocr.jobs", 0)))
-            return original(source, cfg, ruleset, profile)
+            return original(source, cfg, *args, **kwargs)
 
         monkeypatch.setattr(pipeline_module, "process_source", espion)
         run_pipeline(corpus, config, workers=4)
@@ -243,9 +243,9 @@ class TestWorkers:
 
         original = pipeline_module.process_source
 
-        def espion(source, cfg, ruleset=None, profile=None):
+        def espion(source, cfg, *args, **kwargs):
             vus.append(int(cfg.get("ocr.jobs", 0)))
-            return original(source, cfg, ruleset, profile)
+            return original(source, cfg, *args, **kwargs)
 
         monkeypatch.setattr(pipeline_module, "process_source", espion)
         run_pipeline(corpus, config, workers=1)
