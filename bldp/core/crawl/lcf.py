@@ -66,6 +66,9 @@ CATEGORY_TO_TYPE: dict[str, DocumentType] = {
     "arrete": DocumentType.ARRETE,
     "arrêté": DocumentType.ARRETE,
     "arretes": DocumentType.ARRETE,
+    # « ordon » n'est pas une faute de frappe : c'est la valeur que le
+    # catalogue du SGG porte réellement pour ses 1 007 ordonnances.
+    "ordon": DocumentType.ORDONNANCE,
     "ordonnance": DocumentType.ORDONNANCE,
     "ordonnances": DocumentType.ORDONNANCE,
     "decision": DocumentType.DECISION,
@@ -121,10 +124,22 @@ class CrawlRecord:
 
     @property
     def document_type(self) -> Optional[DocumentType]:
-        """Type déduit de la catégorie annoncée, ou ``None`` si inconnue."""
-        if not self.category:
-            return None
-        return CATEGORY_TO_TYPE.get(self.category.strip().lower())
+        """Type déduit de la fiche, ou ``None`` si rien ne permet de conclure.
+
+        La catégorie est essayée d'abord, puis l'identifiant de source. Ce
+        repli n'est pas un luxe : le catalogue du SGG écrit « ordon » pour ses
+        1 007 ordonnances, et rien ne garantit que la prochaine source ne
+        tronquera pas autrement. Le nom de la source, lui, est stable — c'est
+        la collection elle-même qui le porte.
+        """
+        if self.category:
+            connu = CATEGORY_TO_TYPE.get(self.category.strip().lower())
+            if connu is not None:
+                return connu
+        # « bj.sgg.ordonnances » -> « ordonnances »
+        if self.source_id and "." in self.source_id:
+            return CATEGORY_TO_TYPE.get(self.source_id.rsplit(".", 1)[-1].lower())
+        return None
 
     def evidence_for(self, champ: str) -> str:
         """D'où vient ce champ, en une ligne consignable."""

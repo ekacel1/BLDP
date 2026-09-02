@@ -226,7 +226,19 @@ class TestLectureDeLIndex:
         assert fiche(category="decret").document_type is DocumentType.DECRET
         assert fiche(category="accord").document_type is DocumentType.CONVENTION
         assert fiche(category="ordonnance").document_type is DocumentType.ORDONNANCE
-        assert fiche(category="inventee").document_type is None
+        assert fiche(category="inventee", source_id="x.y").document_type is None
+
+    def test_la_categorie_tronquee_du_sgg_est_reconnue(self):
+        """Le catalogue écrit « ordon » pour ses 1 007 ordonnances."""
+        assert fiche(category="ordon").document_type is DocumentType.ORDONNANCE
+
+    def test_la_source_sert_de_repli_quand_la_categorie_est_inconnue(self):
+        """Le nom de la collection est plus stable qu'un libellé de fiche."""
+        f = fiche(category="libelle-inattendu", source_id="bj.sgg.ordonnances")
+        assert f.document_type is DocumentType.ORDONNANCE
+
+    def test_sans_categorie_ni_source_utile_on_ne_conclut_pas(self):
+        assert fiche(category=None, source_id="bj.sgg.machins").document_type is None
 
 
 # ---------------------------------------------------------------------------
@@ -275,8 +287,9 @@ class TestConfrontation:
         assert any("catalogue" in w for w in m.warnings)
 
     def test_le_type_inconnu_se_signale_au_lieu_de_devenir_autre(self):
+        """Quand ni la catégorie ni la source ne concluent, on ne devine pas."""
         m = metadonnees()
-        ecarts = reconcile(m, fiche(category="machin"))
+        ecarts = reconcile(m, fiche(category="machin", source_id="bj.sgg.machins"))
         assert m.type is DocumentType.INCONNU
         signalement = next(e for e in ecarts if e.field == "type")
         assert "CATEGORY_TO_TYPE" in signalement.message
