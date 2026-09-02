@@ -17,6 +17,8 @@ from bldp.core.crawl.lcf import (
     CrawlRecord,
     Discrepancy,
     LcfIndex,
+    load_catalogue,
+    normalize_hash,
     reconcile,
 )
 
@@ -28,5 +30,7 @@ __all__ = [
     "CrawlRecord",
     "Discrepancy",
     "LcfIndex",
+    "load_catalogue",
+    "normalize_hash",
     "reconcile",
 ]

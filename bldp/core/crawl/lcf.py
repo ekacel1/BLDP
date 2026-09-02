@@ -92,6 +92,44 @@ CATALOGUE_CONFIDENCE = 0.85
 AGREEMENT_CONFIDENCE = 0.98
 
 
+def normalize_hash(value: str) -> str:
+    """Empreinte réduite à sa forme comparable.
+
+    Le collecteur écrit ``sha256:ab12…``, le pipeline ``ab12…``. Les deux
+    désignent le même contenu ; seule la convention d'écriture diffère.
+    """
+    if not value:
+        return ""
+    return value.split(":", 1)[-1].strip().lower()
+
+
+def load_catalogue(config) -> Optional[dict[str, "CrawlRecord"]]:
+    """Charge le catalogue déclaré en configuration, ou ``None``.
+
+    Une absence de catalogue n'est jamais une erreur : le pipeline sait
+    travailler sans. En revanche un catalogue déclaré mais illisible en est
+    une — on le dit, plutôt que de traiter tout un corpus en silence sans la
+    vérification qu'on croyait avoir.
+    """
+    if not config.get("crawl.enabled", False):
+        return None
+
+    chemin = str(config.get("crawl.index", "") or "").strip()
+    if not chemin:
+        raise CrawlIndexError(
+            "crawl.enabled est vrai mais crawl.index est vide : indiquez le "
+            "dossier de données du collecteur, par exemple /var/lib/lcf/data."
+        )
+
+    with LcfIndex(chemin) as index:
+        catalogue = index.load_by_hash()
+    logger.info(
+        "Catalogue de collecte chargé : %d fiche(s) depuis %s.",
+        len(catalogue), chemin,
+    )
+    return catalogue
+
+
 # ---------------------------------------------------------------------------
 # Ce que le collecteur sait
 # ---------------------------------------------------------------------------
@@ -295,6 +333,27 @@ class LcfIndex:
             _REQUETE + " AND d.native_id = ?", (native_id,)
         ).fetchone()
         return self._to_record(row) if row else None
+
+    def load_by_hash(self) -> dict[str, CrawlRecord]:
+        """Tout le catalogue en mémoire, indexé par empreinte de contenu.
+
+        Deux raisons de tout charger d'un coup plutôt que d'interroger par
+        document. D'abord le **volume** : quelques milliers de fiches tiennent
+        sans peine en mémoire, là où autant d'ouvertures de base coûteraient
+        plus que le traitement lui-même. Ensuite les **fils** : le pipeline
+        traite en parallèle, et une connexion SQLite ne se partage pas entre
+        fils — un dictionnaire, si.
+
+        L'empreinte est la bonne clef de jointure : elle désigne le contenu,
+        pas le nom du fichier. Un document renommé, déplacé ou recopié
+        retrouve sa fiche ; deux fichiers identiques la partagent.
+        """
+        catalogue: dict[str, CrawlRecord] = {}
+        for fiche in self.records():
+            empreinte = normalize_hash(fiche.content_hash)
+            if empreinte:
+                catalogue[empreinte] = fiche
+        return catalogue
 
     def _to_record(self, row: sqlite3.Row) -> Optional[CrawlRecord]:
         chemin = self.objects_dir / row["chemin"]

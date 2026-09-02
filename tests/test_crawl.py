@@ -21,6 +21,7 @@ import sqlite3
 
 import pytest
 
+from bldp.config import Config
 from bldp.core.crawl import (
     AGREEMENT_CONFIDENCE,
     CrawlIndexError,
@@ -357,3 +358,100 @@ class TestDeBoutEnBout:
         ecarts = reconcile(m, f)
         assert {e.action for e in ecarts} == {"confirme"}
         assert not m.warnings
+
+
+# ---------------------------------------------------------------------------
+# Raccordement au pipeline
+# ---------------------------------------------------------------------------
+
+
+class TestRaccordementAuPipeline:
+    """Le catalogue doit profiter au pipeline, pas seulement exister."""
+
+    def test_sans_catalogue_declare_le_pipeline_n_en_charge_aucun(self):
+        from bldp.core.crawl import load_catalogue
+
+        assert load_catalogue(Config({})) is None
+
+    def test_un_catalogue_declare_sans_chemin_est_une_erreur(self):
+        """Croire disposer d'une vérification qu'on n'a pas est le pire cas."""
+        from bldp.core.crawl import load_catalogue
+
+        with pytest.raises(CrawlIndexError) as erreur:
+            load_catalogue(Config({"crawl": {"enabled": True, "index": ""}}))
+        assert "crawl.index" in str(erreur.value)
+
+    def test_le_catalogue_s_indexe_par_empreinte_de_contenu(self, data_dir):
+        """La jointure porte sur le contenu, pas sur le nom du fichier."""
+        from bldp.core.crawl import load_catalogue
+
+        catalogue = load_catalogue(
+            Config({"crawl": {"enabled": True, "index": str(data_dir)}})
+        )
+        assert list(catalogue) == ["abc"], "le préfixe « sha256: » doit tomber"
+        assert catalogue["abc"].number == "2024-09"
+
+    @pytest.mark.parametrize(
+        "brut,attendu",
+        [("sha256:AB12", "ab12"), ("ab12", "ab12"), ("", ""), ("  SHA256:Cd  ", "cd")],
+    )
+    def test_les_deux_conventions_d_empreinte_se_rejoignent(self, brut, attendu):
+        from bldp.core.crawl import normalize_hash
+
+        assert normalize_hash(brut) == attendu
+
+    def test_le_pipeline_remplit_source_url_depuis_le_catalogue(self, data_dir):
+        """Le gain principal : l'URL d'origine ne figure dans aucun PDF.
+
+        Mesuré sur le lot 1 du corpus SGG : ``source_url`` manquait sur les
+        2 555 documents, et c'est ce seul champ qui les faisait tous basculer
+        en « métadonnées incomplètes ».
+        """
+        from bldp.core.crawl import load_catalogue
+        from bldp.models import SourceFile
+        from bldp.pipeline import _confronter_au_catalogue
+        from bldp.utils import utc_now_iso
+
+        catalogue = load_catalogue(
+            Config({"crawl": {"enabled": True, "index": str(data_dir)}})
+        )
+        document = type("D", (), {})()
+        document.document_id = "loi_2024_09"
+        document.metadata = metadonnees(number="2024-09")
+        source = SourceFile(
+            document_id="loi_2024_09", source_path="/x.pdf", filename="x.pdf",
+            extension=".pdf", size_bytes=1, file_hash="abc",
+            ingested_at=utc_now_iso(),
+        )
+        _confronter_au_catalogue(document, source, catalogue)
+        assert document.metadata.source_url == "https://sgg.gouv.bj/doc/loi-2024-09/"
+        assert document.metadata.retrieved_at
+
+    def test_un_document_hors_catalogue_traverse_sans_bruit(self, data_dir):
+        """Un corpus peut contenir des pièces qui ne viennent pas d'une collecte."""
+        from bldp.core.crawl import load_catalogue
+        from bldp.models import SourceFile
+        from bldp.pipeline import _confronter_au_catalogue
+        from bldp.utils import utc_now_iso
+
+        catalogue = load_catalogue(
+            Config({"crawl": {"enabled": True, "index": str(data_dir)}})
+        )
+        document = type("D", (), {})()
+        document.document_id = "inconnu"
+        document.metadata = metadonnees()
+        source = SourceFile(
+            document_id="inconnu", source_path="/y.pdf", filename="y.pdf",
+            extension=".pdf", size_bytes=1, file_hash="empreinte-absente",
+            ingested_at=utc_now_iso(),
+        )
+        _confronter_au_catalogue(document, source, catalogue)
+        assert document.metadata.source_url is None
+        assert not document.metadata.warnings
+
+    def test_un_catalogue_illisible_n_arrete_pas_le_lot(self, tmp_path):
+        """§26 : le lot continue, mais le défaut est dit bruyamment."""
+        from bldp.pipeline import _load_catalogue_or_warn
+
+        conf = Config({"crawl": {"enabled": True, "index": str(tmp_path / "vide")}})
+        assert _load_catalogue_or_warn(conf) is None

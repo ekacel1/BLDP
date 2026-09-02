@@ -48,6 +48,19 @@ ingest:
   copy_to_raw: true
   follow_symlinks: false
 
+# --- Catalogue de collecte (optionnel) --------------------------------------
+# Un collecteur qui aspire un portail juridique produit une fiche par document :
+# numero annonce, titre officiel, categorie, URL de la page d'origine. BLDP la
+# lit pour combler ce que le PDF ne dit pas (l'URL source n'y figure jamais) et
+# pour signaler ce qui diverge.
+#
+# Le document garde toujours le dernier mot : une valeur lue dans le texte
+# n'est jamais remplacee par celle du catalogue, elle est confrontee.
+crawl:
+  enabled: false
+  # Dossier de donnees du collecteur, ex. /var/lib/lcf/data
+  index: ""
+
 # --- Module 3 : extraction ---------------------------------------------------
 extraction:
   # Remettre les blocs de texte dans l'ordre de lecture (tri par position).

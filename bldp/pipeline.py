@@ -111,6 +111,7 @@ def process_source(
     config: Config,
     ruleset: Any = None,
     profile: Any = None,
+    catalogue: Any = None,
 ) -> Document:
     """Traite un document, de l'analyse PDF au parsing.
 
@@ -192,7 +193,63 @@ def process_source(
     )
     document.metadata.warnings = warnings_so_far + document.metadata.warnings
 
+    # -- Module 7 bis : confrontation au catalogue de collecte --------------
+    #
+    # Le collecteur en sait plus que le document sur certains points : l'URL
+    # de la page d'origine ne figure nulle part dans le PDF, et un numéro
+    # illisible sur un scan est lisible sur la fiche. Le document garde le
+    # dernier mot partout ailleurs ; ce qui diverge est signalé, pas remplacé.
+    _confronter_au_catalogue(document, source, catalogue)
+
     return document
+
+
+def _load_catalogue_or_warn(config: Config) -> Any:
+    """Charge le catalogue si la configuration en déclare un.
+
+    Un catalogue illisible n'arrête pas le lot (§26) — mais il est dit
+    bruyamment, parce que traiter tout un corpus en croyant disposer d'une
+    vérification qu'on n'a pas est pire que de ne pas l'avoir demandée.
+    """
+    from bldp.core.crawl import CrawlIndexError, load_catalogue
+
+    try:
+        return load_catalogue(config)
+    except CrawlIndexError as exc:
+        logger.error(
+            "Catalogue de collecte inutilisable : %s — le lot est traité SANS "
+            "confrontation au catalogue.", exc,
+        )
+        return None
+
+
+def _confronter_au_catalogue(
+    document: Document, source: SourceFile, catalogue: Any
+) -> None:
+    """Met la fiche du collecteur en regard des métadonnées lues.
+
+    La jointure se fait sur l'**empreinte du contenu**, pas sur le nom du
+    fichier : un document renommé ou recopié retrouve sa fiche. Un document
+    absent du catalogue n'est pas une anomalie — le corpus peut contenir des
+    pièces qui ne viennent pas d'une collecte.
+    """
+    if not catalogue:
+        return
+
+    from bldp.core.crawl import normalize_hash, reconcile
+
+    fiche = catalogue.get(normalize_hash(source.file_hash))
+    if fiche is None:
+        return
+
+    ecarts = reconcile(document.metadata, fiche)
+    divergences = [e for e in ecarts if e.action == "diverge"]
+    if divergences:
+        logger.info(
+            "%s : %d divergence(s) avec le catalogue (%s).",
+            document.document_id, len(divergences),
+            ", ".join(sorted({e.field for e in divergences})),
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -397,8 +454,13 @@ def run_pipeline(
             config = config.with_overrides({"ocr": {"jobs": 1}})
         logger.info("Traitement de %d document(s) sur %d fil(s).", len(sources), worker_count)
 
+    # Le catalogue de collecte est chargé une fois pour tout le lot : il tient
+    # en mémoire, et un dictionnaire se partage entre fils là où une connexion
+    # SQLite ne le ferait pas.
+    catalogue = _load_catalogue_or_warn(config)
+
     result.documents = _process_sources(
-        sources, config, ruleset, profile, report, worker_count, progress
+        sources, config, ruleset, profile, report, worker_count, progress, catalogue
     )
     documents = result.documents
 
@@ -613,6 +675,7 @@ def _process_sources(
     report: RunReport,
     workers: int,
     progress: ProgressCallback | None,
+    catalogue: Any = None,
 ) -> list[Document]:
     """Traite les documents, séquentiellement ou en parallèle.
 
@@ -634,7 +697,7 @@ def _process_sources(
     def handle(index: int, source: SourceFile) -> None:
         nonlocal done
         try:
-            document = process_source(source, config, ruleset, profile)
+            document = process_source(source, config, ruleset, profile, catalogue)
         except Exception as exc:  # noqa: BLE001 — §26 : jamais d'arrêt du lot
             logger.error(
                 "Erreur inattendue sur %s : %s", source.document_id, exc, exc_info=True
