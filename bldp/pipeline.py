@@ -253,9 +253,15 @@ def _repli_ocr_si_aucun_article(
         "%s : aucun article par la voie native — seconde lecture en OCR.",
         source.document_id,
     )
+    # Sans ces deux surcharges, le repli ne sert à rien : OCRmyPDF respecte
+    # « --skip-text » et refuse de retoucher une page qui porte déjà du
+    # texte. Or c'est précisément ce texte-là qui est illisible. Il faut
+    # raser la couche existante et relire l'image — mesuré : 1 seconde et
+    # zéro article sans « --force-ocr », le document reste muet.
+    config_repli = config.with_overrides({"ocr": {"skip_text": False, "force": True}})
     try:
         seconde = extract_with_route(
-            path, source.document_id, "ocr", config,
+            path, source.document_id, "ocr", config_repli,
             ocr_pages=None, source_file=source.filename,
         )
     except ExtractionError as exc:
@@ -265,7 +271,7 @@ def _repli_ocr_si_aucun_article(
         document.metadata.warnings.append(f"repli OCR impossible : {exc}")
         return cleaned, parse_result
 
-    pages_ocr, _ = clean_pages(seconde.pages, config, source.document_id)
+    pages_ocr, _ = clean_pages(seconde.pages, config_repli, source.document_id)
     analyse_ocr = parse_document(
         pages_ocr, source.document_id, config, ruleset, source.filename
     )

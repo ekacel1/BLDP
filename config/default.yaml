@@ -98,6 +98,11 @@ ocr:
   dpi: 300
   # Ne jamais ré-OCRiser une page qui contient déjà du texte natif.
   skip_text: true
+  # Raser la couche texte existante et tout relire depuis l'image. Exclusif
+  # de skip_text. À laisser à false : c'est le repli automatique qui l'active
+  # ponctuellement, sur les documents dont la couche texte est un mauvais OCR
+  # — les seuls que skip_text protégerait à tort.
+  force: false
   timeout_seconds: 1800
   # Conserver le PDF OCRisé pour audit
   keep_sidecar_pdf: true

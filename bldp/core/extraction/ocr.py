@@ -445,6 +445,10 @@ def ocr_document(
     language = str(config.get("ocr.language", "fra"))
     dpi = int(config.get("ocr.dpi", 300))
     skip_text = bool(config.get("ocr.skip_text", True))
+    # « force » rase la couche texte existante et relit tout depuis
+    # l'image. C'est le seul moyen d'atteindre un document dont la
+    # couche texte est un mauvais OCR : « skip_text » la protegerait.
+    force = bool(config.get("ocr.force", False))
     timeout = int(config.get("ocr.timeout_seconds", 1800))
     keep_pdf = bool(config.get("ocr.keep_sidecar_pdf", True))
     jobs = int(config.get("ocr.jobs", 0))
@@ -477,7 +481,7 @@ def ocr_document(
             if engine == "ocrmypdf":
                 return _ocr_via_ocrmypdf(
                     path, document_id, config, output_dir, language, dpi,
-                    skip_text, timeout, keep_pdf, source_file, jobs,
+                    skip_text, timeout, keep_pdf, source_file, jobs, force,
                 )
             return ocr_pages_with_tesseract(
                 path, document_id, None, language, dpi, min(timeout, 600), source_file
@@ -503,6 +507,7 @@ def _ocr_via_ocrmypdf(
     keep_pdf: bool,
     source_file: str | None,
     jobs: int = 0,
+    force: bool = False,
 ) -> ExtractionResult:
     """OCRmyPDF puis relecture native du PDF enrichi."""
     import tempfile
@@ -512,7 +517,9 @@ def _ocr_via_ocrmypdf(
 
     if keep_pdf:
         ocr_pdf = destination / f"{document_id}_ocr.pdf"
-        produced = run_ocrmypdf(path, ocr_pdf, language, dpi, skip_text, timeout, jobs=jobs)
+        produced = run_ocrmypdf(
+            path, ocr_pdf, language, dpi, skip_text, timeout, force=force, jobs=jobs
+        )
         result = extract_document(
             produced, document_id, source_file=source_file or Path(path).name,
             sort_blocks=bool(config.get("extraction.sort_blocks", True)),
@@ -522,7 +529,7 @@ def _ocr_via_ocrmypdf(
         with tempfile.TemporaryDirectory(prefix="bldp_ocr_") as workdir:
             produced = run_ocrmypdf(
                 path, Path(workdir) / "ocr.pdf", language, dpi, skip_text, timeout,
-                jobs=jobs,
+                force=force, jobs=jobs,
             )
             result = extract_document(
                 produced, document_id, source_file=source_file or Path(path).name
