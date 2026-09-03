@@ -47,7 +47,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from bldp.core.crawl import LcfIndex  # noqa: E402
+from bldp.core.crawl import LcfIndex, normalize_hash  # noqa: E402
 
 
 #: Les PDF sont déjà compressés : les recompresser coûte du temps de calcul
@@ -69,13 +69,13 @@ def empreinte(chemin: Path) -> str:
 
 
 def construire_manifeste(
-    lcf_dir: Path, document_ids: set[str] | None
+    lcf_dir: Path, empreintes: set[str] | None
 ) -> tuple[list[dict], dict]:
     """Le manifeste de reconstitution, depuis le catalogue de collecte.
 
     Args:
         lcf_dir: dossier de données du collecteur.
-        document_ids: identifiants à retenir ; ``None`` pour tout le
+        empreintes: empreintes de contenu à retenir ; ``None`` pour tout le
             catalogue.
 
     Returns:
@@ -86,7 +86,7 @@ def construire_manifeste(
 
     with LcfIndex(lcf_dir) as index:
         for fiche in index.records():
-            if document_ids is not None and fiche.document_id not in document_ids:
+            if empreintes is not None and normalize_hash(fiche.content_hash) not in empreintes:
                 continue
             par_source[fiche.source_id] = par_source.get(fiche.source_id, 0) + 1
             fiches.append(
@@ -116,31 +116,41 @@ def construire_manifeste(
     return fiches, resume
 
 
-def documents_du_lot(exports_dir: Path) -> set[str] | None:
-    """Identifiants réellement présents dans les sorties du lot.
+def empreintes_du_lot(exports_dir: Path) -> set[str] | None:
+    """Empreintes des documents réellement présents dans les sorties du lot.
 
-    On se fie à la base produite plutôt qu'à une liste tenue à la main : ce
-    qui a été traité est ce qui est dans la base, pas ce qu'on croyait y
-    mettre.
+    Deux choix ici. On se fie à la **base produite** plutôt qu'à une liste
+    tenue à la main : ce qui a été traité est ce qui est dans la base, pas ce
+    qu'on croyait y mettre. Et on joint sur l'**empreinte du contenu** plutôt
+    que sur le nom du fichier, comme partout ailleurs dans la chaîne — un
+    document renommé reste le même document.
+
+    Returns:
+        Les empreintes, ou ``None`` si la base est absente ou illisible : le
+        manifeste couvre alors tout le catalogue, ce qui est plus large mais
+        jamais faux.
     """
     import sqlite3
 
     base = exports_dir / "exports" / "legal_database.sqlite"
     if not base.exists():
+        print(f"  base introuvable ({base}) — manifeste étendu au catalogue entier",
+              file=sys.stderr)
         return None
 
     connexion = sqlite3.connect(f"file:{base}?mode=ro", uri=True)
     try:
         lignes = connexion.execute(
-            "SELECT filename FROM source_files WHERE filename IS NOT NULL"
+            "SELECT file_hash FROM documents WHERE file_hash IS NOT NULL"
         ).fetchall()
-    except sqlite3.Error:
+    except sqlite3.Error as exc:
+        print(f"  base illisible ({exc}) — manifeste étendu au catalogue entier",
+              file=sys.stderr)
         return None
     finally:
         connexion.close()
 
-    # « loi-2024-09.pdf » -> « loi-2024-09 », l'identifiant du catalogue.
-    return {Path(nom).stem for (nom,) in lignes if nom}
+    return {h.strip().lower() for (h,) in lignes if h}
 
 
 def ajouter_dossier(archive: zipfile.ZipFile, dossier: Path, prefixe: str) -> int:
@@ -176,7 +186,7 @@ def main() -> int:
     horodatage = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
 
     print(f"Lot « {args.lot} »")
-    ids = documents_du_lot(args.exports)
+    ids = empreintes_du_lot(args.exports)
     print(f"  documents dans la base : {len(ids) if ids is not None else 'tous'}")
 
     fiches, resume = construire_manifeste(args.lcf, ids)
@@ -234,7 +244,7 @@ def main() -> int:
             with LcfIndex(args.lcf) as index:
                 joints = 0
                 for fiche in index.records():
-                    if ids is not None and fiche.document_id not in ids:
+                    if ids is not None and normalize_hash(fiche.content_hash) not in ids:
                         continue
                     if fiche.content_path.exists():
                         z.write(
