@@ -38,6 +38,8 @@ class JurisdictionProfile:
         ruleset: règles de parsing, déjà fusionnées avec le socle générique.
         document_type_patterns: motifs reconnaissant le type d'un document.
         authority_patterns: motifs reconnaissant l'autorité émettrice.
+        default_authority_by_type: autorité qu'implique le type de l'acte,
+            faute de mieux.
         number_patterns: motifs de numéros officiels (« 2026-001 »).
         official_sources: sources officielles connues, pour la métadonnée
             ``source``.
@@ -49,6 +51,10 @@ class JurisdictionProfile:
     ruleset: RuleSet = field(default_factory=generic_ruleset)
     document_type_patterns: dict[str, list[Pattern[str]]] = field(default_factory=dict)
     authority_patterns: dict[str, list[Pattern[str]]] = field(default_factory=dict)
+    #: Autorite emettrice qu'implique le type de l'acte, quand l'institution
+    #: ne laisse aucune ambiguite. Sert uniquement a COMBLER : une autorite
+    #: lue dans le texte n'est jamais remplacee par une deduction.
+    default_authority_by_type: dict[str, str] = field(default_factory=dict)
     number_patterns: list[Pattern[str]] = field(default_factory=list)
     date_patterns: list[Pattern[str]] = field(default_factory=list)
     official_sources: dict[str, str] = field(default_factory=dict)

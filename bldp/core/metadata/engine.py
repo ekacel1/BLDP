@@ -411,6 +411,49 @@ def detect_document_type(
     return DocumentType.INCONNU, 0.0, ""
 
 
+#: Confiance d'une autorité déduite du type plutôt que lue.
+#:
+#: Volontairement inférieure à toute lecture directe : la règle
+#: institutionnelle est fiable, mais elle reste une déduction. Elle doit se
+#: distinguer, dans les scores comme dans les preuves, d'un texte où
+#: « LE PRÉSIDENT DE LA RÉPUBLIQUE » est écrit noir sur blanc.
+DEDUCED_AUTHORITY_CONFIDENCE = 0.75
+
+
+def deduce_authority(
+    doc_type: Any, profile: JurisdictionProfile | None
+) -> tuple[Optional[str], float, str]:
+    """Autorité qu'implique le type de l'acte, quand rien n'a été lu.
+
+    Certains types ne laissent aucune ambiguïté institutionnelle : la loi est
+    votée par l'assemblée, le décret est pris par l'exécutif. Quand le texte
+    ne le dit pas — un scan dont l'en-tête est illisible, une page de garde
+    manquante — le déduire vaut mieux qu'un champ vide.
+
+    Deux précautions le rendent honnête. La déduction ne s'applique **jamais**
+    par-dessus une lecture : elle ne comble qu'un vide. Et sa preuve dit qu'il
+    s'agit d'une déduction, avec une confiance moindre — un relecteur doit
+    pouvoir distinguer d'un coup d'œil ce qui a été lu de ce qui a été conclu.
+
+    La table elle-même appartient à la juridiction, jamais au socle : ce qui
+    est vrai au Bénin ne l'est pas ailleurs.
+    """
+    table = getattr(profile, "default_authority_by_type", None) if profile else None
+    if not table:
+        return None, 0.0, ""
+
+    cle = getattr(doc_type, "value", doc_type)
+    autorite = table.get(str(cle).lower()) if cle else None
+    if not autorite:
+        return None, 0.0, ""
+
+    return (
+        autorite,
+        DEDUCED_AUTHORITY_CONFIDENCE,
+        f"déduit du type « {cle} » (règle institutionnelle), non lu dans le texte",
+    )
+
+
 def detect_authority(text: str, profile: JurisdictionProfile | None) -> tuple[Optional[str], float, str]:
     """Repère l'autorité émettrice."""
     for name, patterns in (profile.authority_patterns if profile else {}).items():
@@ -599,6 +642,10 @@ def extract_metadata(
     record("title", title, title_conf, title_evidence)
 
     authority, authority_conf, authority_evidence = detect_authority(text, profile)
+    if not authority:
+        authority, authority_conf, authority_evidence = deduce_authority(
+            metadata.type, profile
+        )
     record("authority", authority, authority_conf, authority_evidence)
 
     domain, domain_conf, domain_evidence = detect_legal_domain(full_text)

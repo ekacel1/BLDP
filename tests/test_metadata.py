@@ -487,3 +487,92 @@ class TestOcrDashesAndCitedDates:
             "2025-19",
         )
         assert confiance >= 0.80
+
+
+# ---------------------------------------------------------------------------
+# Autorité déduite du type
+# ---------------------------------------------------------------------------
+
+
+class TestAutoriteDeduite:
+    """Combler un vide sans jamais recouvrir une lecture.
+
+    Mesuré sur le lot 1 du corpus SGG : 842 documents sans autorité lisible,
+    presque tous des lois et des ordonnances dont l'en-tête est illisible sur
+    le scan. L'institution, elle, ne laisse aucun doute sur qui a pris l'acte.
+    """
+
+    @pytest.fixture
+    def profil(self):
+        from bldp.config import load_config
+        from bldp.jurisdictions.registry import get_profile
+
+        return get_profile(load_config())
+
+    @pytest.mark.parametrize(
+        "type_acte,attendu",
+        [
+            ("loi", "Assemblée nationale"),
+            ("code", "Assemblée nationale"),
+            ("decret", "Président de la République"),
+            ("ordonnance", "Président de la République"),
+        ],
+    )
+    def test_les_types_sans_ambiguite_se_deduisent(self, profil, type_acte, attendu):
+        from bldp.core.metadata.engine import deduce_authority
+        from bldp.models import DocumentType
+
+        autorite, confiance, preuve = deduce_authority(DocumentType(type_acte), profil)
+        assert autorite == attendu
+        assert 0 < confiance < 1
+        assert "déduit" in preuve and "non lu" in preuve
+
+    @pytest.mark.parametrize(
+        "type_acte", ["arrete", "decision", "convention", "jurisprudence", "inconnu"]
+    )
+    def test_les_types_ambigus_ne_se_devinent_pas(self, profil, type_acte):
+        """Un arrêté peut venir d'un ministre, d'un préfet ou d'un maire.
+
+        Mieux vaut un champ vide et signalé qu'un champ rempli et faux.
+        """
+        from bldp.core.metadata.engine import deduce_authority
+        from bldp.models import DocumentType
+
+        autorite, _, _ = deduce_authority(DocumentType(type_acte), profil)
+        assert autorite is None
+
+    def test_le_socle_generique_ignore_le_benin(self):
+        """§29 : ce qui est vrai au Bénin ne l'est pas ailleurs."""
+        from bldp.core.metadata.engine import deduce_authority
+        from bldp.models import DocumentType
+
+        assert deduce_authority(DocumentType.LOI, None) == (None, 0.0, "")
+
+    def test_une_autorite_lue_n_est_jamais_remplacee(self, config):
+        """La déduction comble un vide ; elle ne recouvre pas une lecture."""
+        from bldp.core.metadata.engine import extract_metadata
+
+        pages = make_pages([
+            "REPUBLIQUE DU BENIN\n"
+            "LOI N° 2024-09 DU 20 FEVRIER 2024 portant organisation.\n"
+            "LA COUR CONSTITUTIONNELLE,\n\n"
+            "Article 1er : La presente loi fixe les regles.\n"
+        ])
+        metadata = extract_metadata("loi_2024_09", pages, config)
+        assert metadata.authority == "Cour constitutionnelle"
+        assert "déduit" not in metadata.evidence.get("authority", "")
+
+    def test_une_autorite_absente_se_comble_et_se_declare(self, config):
+        """Le cas visé : un scan dont l'en-tête institutionnel a disparu."""
+        from bldp.core.metadata.engine import extract_metadata
+
+        pages = make_pages([
+            "LOI N° 2024-09 DU 20 FEVRIER 2024 portant organisation du travail.\n\n"
+            "Article 1er : La presente loi fixe les regles applicables.\n"
+        ])
+        metadata = extract_metadata("loi_2024_09", pages, config)
+        assert metadata.authority == "Assemblée nationale"
+        assert "déduit" in metadata.evidence["authority"]
+        assert metadata.confidence["authority"] < 0.9, (
+            "une déduction doit se distinguer d'une lecture dans les scores"
+        )

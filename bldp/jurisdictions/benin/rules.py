@@ -148,6 +148,27 @@ AUTHORITY_PATTERNS: dict[str, list[re.Pattern[str]]] = {
     ],
 }
 
+#: Autorite emettrice qu'implique le type de l'acte, en droit beninois.
+#:
+#: On ne retient ici que les cas ou l'institution ne laisse aucune place au
+#: doute : la loi est votee par l'Assemblee nationale, le decret et
+#: l'ordonnance sont pris par le President de la Republique. Un code est une
+#: loi, il suit la meme regle.
+#:
+#: Sont volontairement absents les arretes (ministre, prefet, maire selon le
+#: cas), les decisions et les accords : leur autorite varie, et la deduire
+#: serait inventer. Mieux vaut un champ vide et signale qu'un champ rempli et
+#: faux.
+#:
+#: Mesure sur le lot 1 du corpus SGG : 842 documents sans autorite lisible,
+#: dont la quasi-totalite sont des lois et des ordonnances.
+DEFAULT_AUTHORITY_BY_TYPE: dict[str, str] = {
+    "loi": "Assemblée nationale",
+    "code": "Assemblée nationale",
+    "decret": "Président de la République",
+    "ordonnance": "Président de la République",
+}
+
 #: Séparateur d'un numéro officiel : tout tiret Unicode, l'underscore ou le
 #: point, seuls ou combinés (« 2010.- 028 » se rencontre sur des scans bruités).
 _NUM_SEP = f"[{re.escape(DASHES + '_.')}]{{1,3}}"
@@ -289,6 +310,7 @@ def build() -> JurisdictionProfile:
         ),
         document_type_patterns=DOCUMENT_TYPE_PATTERNS,
         authority_patterns=AUTHORITY_PATTERNS,
+        default_authority_by_type=DEFAULT_AUTHORITY_BY_TYPE,
         number_patterns=NUMBER_PATTERNS,
         date_patterns=DATE_PATTERNS,
         official_sources=OFFICIAL_SOURCES,
