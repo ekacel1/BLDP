@@ -29,6 +29,15 @@ pipeline:
   # Indispensable sur de gros lots : une interruption ne fait plus tout
   # recommencer. Un document en échec est toujours retenté.
   resume: false
+  # Traiter le lot par tranches de N documents, en ecrivant chacune avant de
+  # passer a la suivante. 0 = pas de decoupage (comportement historique).
+  #
+  # Un corpus de plusieurs milliers de documents ne tient pas en memoire :
+  # mesure sur le lot 2 du corpus SGG, 6 111 documents occupaient 5,1 Go et le
+  # noyau a tue le processus au moment de l'export — apres quatre heures de
+  # calcul, sans rien produire. Au-dela d'un millier de documents, decouper
+  # n'est pas une optimisation, c'est la condition pour que le lot aboutisse.
+  slice_size: 0
   # Documents traités de front. 0 = un par cœur.
   # Le temps est passé dans OCRmyPDF/Tesseract, des sous-processus : des fils
   # suffisent, sans sérialisation entre processus.

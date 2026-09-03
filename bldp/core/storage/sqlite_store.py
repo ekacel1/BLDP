@@ -1007,14 +1007,33 @@ def load_document(database: "LegalDatabase", document_id: str) -> Optional[Docum
     )
 
 
-def load_documents(database: "LegalDatabase") -> list[Document]:
-    """Reconstruit tout le corpus enregistré."""
-    documents = []
-    for row in database.list_documents():
-        document = load_document(database, row["document_id"])
+def iter_documents(database: "LegalDatabase") -> Iterator[Document]:
+    """Parcourt le corpus enregistré **un document à la fois**.
+
+    C'est la variante à préférer sur un gros corpus : reconstruire les 35 000
+    documents du corpus SGG d'un bloc demande plusieurs gigaoctets, et un
+    noyau qui manque de mémoire ne prévient pas — il tue le processus au
+    moment de l'export, après des heures de calcul.
+
+    Les identifiants sont lus d'abord, en une requête : la liste des seuls
+    identifiants tient sans peine, là où les documents complets ne tiennent
+    pas.
+    """
+    identifiants = [row["document_id"] for row in database.list_documents()]
+    for identifiant in identifiants:
+        document = load_document(database, identifiant)
         if document is not None:
-            documents.append(document)
-    return documents
+            yield document
+
+
+def load_documents(database: "LegalDatabase") -> list[Document]:
+    """Reconstruit tout le corpus enregistré, d'un bloc.
+
+    Pratique sur un corpus modeste, dangereux au-delà : préférez
+    :func:`iter_documents` dès que le nombre de documents se compte en
+    milliers.
+    """
+    return list(iter_documents(database))
 
 
 def rebuild_metadata(row: sqlite3.Row) -> DocumentMetadata:

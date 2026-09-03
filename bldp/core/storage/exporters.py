@@ -302,6 +302,122 @@ def export_by_category(
     return base
 
 
+def export_slice(
+    documents: Sequence[Document],
+    config: Config,
+    first: bool,
+    output_dir: str | Path | None = None,
+) -> dict[str, int]:
+    """Verse une tranche de corpus dans les exports, sans écraser les autres.
+
+    Exporter un gros corpus d'un seul tenant suppose de le tenir entier en
+    mémoire — ce qui a coûté quatre heures de calcul sur le lot 2 du corpus
+    SGG, le noyau ayant tué le processus à 5,1 Go au moment de l'écriture.
+
+    Cette fonction écrit une tranche et l'oublie. Le premier appel remet les
+    fichiers à zéro ; les suivants ajoutent à la suite. La base SQLite, elle,
+    est naturellement incrémentale.
+
+    Les agrégats — ``metadata.json``, ``quality_report.json`` — ne sont pas
+    écrits ici : ils demandent le corpus entier et se régénèrent en fin de
+    parcours, à partir de la base.
+
+    Args:
+        first: vrai pour la première tranche, qui repart de fichiers vides.
+
+    Returns:
+        Le nombre d'enregistrements ajoutés, par nom logique.
+    """
+    destination = Path(output_dir) if output_dir else config.path("exports")
+    destination.mkdir(parents=True, exist_ok=True)
+    formats = {str(f).lower() for f in config.get("export.formats", ["jsonl", "sqlite", "json"])}
+    include_pages = bool(config.get("export.include_page_text", True))
+    ajout = not first
+    ecrits: dict[str, int] = {}
+
+    if "jsonl" in formats:
+        ecrits["documents"] = write_jsonl(
+            destination / "documents.jsonl",
+            (document_record(d, include_pages) for d in documents),
+            append=ajout,
+        )
+        ecrits["articles"] = write_jsonl(
+            destination / "articles.jsonl",
+            (article_record(d, a) for d in documents for a in d.articles),
+            append=ajout,
+        )
+
+    if "sqlite" in formats:
+        from bldp.core.storage.sqlite_store import LegalDatabase
+
+        with LegalDatabase(config.path("database")) as database:
+            database.save_documents(documents, include_pages=include_pages)
+        ecrits["sqlite"] = len(documents)
+
+    if bool(config.get("export.by_category", True)):
+        export_by_category(documents, config.path("traites"))
+        ecrits["traites"] = len(documents)
+
+    return ecrits
+
+
+def export_aggregates(
+    documents: Iterable[Document], config: Config, output_dir: str | Path | None = None
+) -> dict[str, str]:
+    """Écrit les exports qui exigent le corpus entier, en le parcourant.
+
+    ``metadata.json`` et ``quality_report.json`` récapitulent tout le corpus :
+    impossible de les écrire par tranches. Mais leur contenu est **léger** —
+    une fiche par document, sans le texte des pages — et se construit donc en
+    parcourant la base sans jamais la charger d'un bloc.
+    """
+    destination = Path(output_dir) if output_dir else config.path("exports")
+    destination.mkdir(parents=True, exist_ok=True)
+    formats = {str(f).lower() for f in config.get("export.formats", ["jsonl", "sqlite", "json"])}
+    produced: dict[str, str] = {}
+    if "json" not in formats:
+        return produced
+
+    fiches: list[dict] = []
+    qualites: list[Document] = []
+    for document in documents:
+        fiches.append(
+            {
+                **document.metadata.to_dict(),
+                "source_file": document.source.filename,
+                "file_hash": document.source.file_hash,
+                "article_count": len(document.articles),
+                "validation": document.validation.value,
+            }
+        )
+        # Seul le rapport qualité est retenu, pas le document : quelques
+        # centaines d'octets au lieu de plusieurs centaines de kilo-octets.
+        allege = Document(
+            document_id=document.document_id,
+            source=document.source,
+            metadata=document.metadata,
+            quality=document.quality,
+            validation=document.validation,
+        )
+        qualites.append(allege)
+
+    chemin_metadonnees = destination / "metadata.json"
+    write_json(
+        chemin_metadonnees,
+        {
+            "generated_at": utc_now_iso(),
+            "document_count": len(fiches),
+            "documents": fiches,
+        },
+    )
+    produced["metadata_json"] = str(chemin_metadonnees)
+
+    chemin_qualite = destination / "quality_report.json"
+    export_quality_report_json(qualites, chemin_qualite)
+    produced["quality_report_json"] = str(chemin_qualite)
+    return produced
+
+
 def export_all(
     documents: Sequence[Document],
     config: Config,

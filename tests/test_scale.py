@@ -387,3 +387,153 @@ class TestDocumentRebuilding:
         record = document_record(next(d for d in documents if d.document_id == "loi_a"))
         assert record["structure"], "la structure doit figurer dans l'export"
         assert record["article_count"] == 2
+
+
+# ---------------------------------------------------------------------------
+# Traitement par tranches
+# ---------------------------------------------------------------------------
+
+
+class TestTranches:
+    """Découper doit produire le même corpus, sans le tenir en mémoire.
+
+    Le besoin n'est pas théorique : sur le lot 2 du corpus SGG, 6 111
+    documents occupaient 5,1 Go et le noyau a tué le processus au moment de
+    l'export — après quatre heures de calcul, sans rien produire.
+    """
+
+    def test_le_decoupage_est_desactive_par_defaut(self, config):
+        """Le découpage se demande ; il ne s'impose pas."""
+        from bldp.pipeline import _decouper
+
+        sources = [f"s{i}" for i in range(10)]
+        assert _decouper(sources, config) == [sources]
+
+    def test_un_lot_plus_court_qu_une_tranche_n_est_pas_decoupe(self, config):
+        from bldp.pipeline import _decouper
+
+        conf = config.with_overrides({"pipeline": {"slice_size": 100}})
+        sources = [f"s{i}" for i in range(10)]
+        assert _decouper(sources, conf) == [sources]
+
+    def test_le_decoupage_couvre_tout_sans_rien_perdre(self, config):
+        from bldp.pipeline import _decouper
+
+        conf = config.with_overrides({"pipeline": {"slice_size": 3}})
+        sources = [f"s{i}" for i in range(10)]
+        tranches = _decouper(sources, conf)
+        assert [len(t) for t in tranches] == [3, 3, 3, 1]
+        assert [s for t in tranches for s in t] == sources
+
+    def test_le_corpus_decoupe_est_identique_au_corpus_d_un_bloc(
+        self, corpus, config, tmp_path
+    ):
+        """Le test qui compte : même entrée, même sortie.
+
+        Un découpage qui perdrait un document, un article ou une métadonnée
+        serait pire qu'une panne — il produirait un corpus incomplet sans
+        que rien ne le signale.
+        """
+        import sqlite3
+
+        from bldp.pipeline import run_pipeline
+
+        def empreinte_du_corpus(base):
+            connexion = sqlite3.connect(f"file:{base}?mode=ro", uri=True)
+            try:
+                documents = connexion.execute(
+                    "SELECT document_id, number, date, type, authority "
+                    "FROM documents ORDER BY document_id"
+                ).fetchall()
+                articles = connexion.execute(
+                    "SELECT document_id, article_number FROM articles "
+                    "ORDER BY document_id, position"
+                ).fetchall()
+                pages = connexion.execute("SELECT COUNT(*) FROM pages").fetchone()
+            finally:
+                connexion.close()
+            return documents, articles, pages
+
+        conf_bloc = config.with_overrides(
+            {"paths": {
+                "exports": str(tmp_path / "bloc"),
+                "database": str(tmp_path / "bloc" / "db.sqlite"),
+                "traites": str(tmp_path / "bloc" / "traites"),
+            }}
+        )
+        conf_tranches = config.with_overrides(
+            {
+                "paths": {
+                    "exports": str(tmp_path / "tranches"),
+                    "database": str(tmp_path / "tranches" / "db.sqlite"),
+                    "traites": str(tmp_path / "tranches" / "traites"),
+                },
+                "pipeline": {"slice_size": 2},
+            }
+        )
+
+        r_bloc = run_pipeline(corpus, conf_bloc)
+        r_tranches = run_pipeline(corpus, conf_tranches)
+
+        assert r_bloc.report.total == r_tranches.report.total
+        assert r_bloc.report.succeeded == r_tranches.report.succeeded
+        assert r_bloc.report.failed == r_tranches.report.failed
+        assert len(r_bloc.report.documents) == len(r_tranches.report.documents)
+
+        assert empreinte_du_corpus(conf_bloc.path("database")) == \
+               empreinte_du_corpus(conf_tranches.path("database")), (
+            "le corpus découpé doit être identique au corpus d'un bloc"
+        )
+
+    def test_les_exports_du_mode_tranches_sont_complets(
+        self, corpus, config, tmp_path
+    ):
+        """Chaque tranche s'ajoute au lieu d'écraser la précédente."""
+        import json
+
+        from bldp.pipeline import run_pipeline
+
+        conf = config.with_overrides(
+            {
+                "paths": {
+                    "exports": str(tmp_path / "sortie"),
+                    "database": str(tmp_path / "sortie" / "db.sqlite"),
+                    "traites": str(tmp_path / "sortie" / "traites"),
+                },
+                "pipeline": {"slice_size": 2},
+            }
+        )
+        resultat = run_pipeline(corpus, conf)
+        total = resultat.report.total
+
+        lignes = (tmp_path / "sortie" / "documents.jsonl").read_text(
+            encoding="utf-8"
+        ).strip().splitlines()
+        assert len(lignes) == total, (
+            "documents.jsonl doit porter tout le corpus, pas la dernière tranche"
+        )
+
+        metadonnees = json.loads(
+            (tmp_path / "sortie" / "metadata.json").read_text(encoding="utf-8")
+        )
+        assert metadonnees["document_count"] == total
+
+    def test_le_mode_tranches_libere_les_documents(self, corpus, config, tmp_path):
+        """Sans cette libération, découper ne servirait à rien."""
+        from bldp.pipeline import run_pipeline
+
+        conf = config.with_overrides(
+            {
+                "paths": {
+                    "exports": str(tmp_path / "s2"),
+                    "database": str(tmp_path / "s2" / "db.sqlite"),
+                    "traites": str(tmp_path / "s2" / "traites"),
+                },
+                "pipeline": {"slice_size": 2},
+            }
+        )
+        resultat = run_pipeline(corpus, conf)
+        assert resultat.report.total > 2
+        assert resultat.documents == [], (
+            "les documents doivent être relâchés après écriture de leur tranche"
+        )

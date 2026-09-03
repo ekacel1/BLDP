@@ -306,6 +306,85 @@ def _repli_ocr_si_aucun_article(
     return pages_ocr, analyse_ocr
 
 
+def _decouper(sources: Sequence[SourceFile], config: Config) -> list[Sequence[SourceFile]]:
+    """Découpe le lot en tranches, selon ``pipeline.slice_size``.
+
+    Le défaut est **zéro** : sans réglage explicite, le pipeline se comporte
+    exactement comme avant, d'un seul tenant. Le découpage se demande, il ne
+    s'impose pas — sur un petit corpus il n'apporte rien et coûte une
+    consolidation.
+
+    Un lot plus court qu'une tranche n'est pas découpé non plus : une tranche
+    unique passerait par le chemin incrémental sans aucun bénéfice.
+    """
+    taille = int(config.get("pipeline.slice_size", 0) or 0)
+    if taille <= 0 or len(sources) <= taille:
+        return [sources]
+    return [sources[i : i + taille] for i in range(0, len(sources), taille)]
+
+
+def _fusionner_doublons(cumul: Any, tranche: Any) -> Any:
+    """Additionne les comptes de doublons d'une tranche à ceux du lot."""
+    if cumul is None:
+        return tranche
+    cumul.identical_files += tranche.identical_files
+    cumul.identical_texts += tranche.identical_texts
+    if hasattr(cumul, "links") and hasattr(tranche, "links"):
+        cumul.links.extend(tranche.links)
+    if hasattr(cumul, "warnings") and hasattr(tranche, "warnings"):
+        cumul.warnings.extend(tranche.warnings)
+    return cumul
+
+
+def _fragmenter(documents: Sequence[Document], config: Config) -> list[Chunk]:
+    """Découpe les documents en fragments, indépendamment des embeddings.
+
+    Les fragments sont produits même quand les embeddings sont désactivés :
+    ils sont utiles tels quels, et permettent d'indexer plus tard sans tout
+    retraiter.
+    """
+    from bldp.core.chunking import chunk_documents
+
+    return chunk_documents(documents, config)
+
+
+def _vectoriser(chunks: Sequence[Chunk], config: Config) -> tuple[list, Optional[str]]:
+    """Calcule les vecteurs à partir de fragments déjà produits.
+
+    Séparé de la fragmentation à dessein : les fragments se construisent
+    tranche par tranche, alors que l'index vectoriel se bâtit une fois, sur
+    l'ensemble.
+
+    Chaque étape dégrade proprement : un environnement incomplet ou un échec
+    d'encodage laisse le corpus entier, sans vecteurs. Perdre l'index est
+    réparable — perdre le corpus ne l'est pas.
+    """
+    if not chunks:
+        return [], None
+
+    from bldp.core.embeddings import (
+        EmbeddingError,
+        EmbeddingsUnavailableError,
+        check_embeddings_ready,
+        embed_chunks,
+    )
+    from bldp.core.vectorstore import index_embeddings
+
+    ready, problems = check_embeddings_ready(config)
+    if not ready:
+        logger.warning("Embeddings ignorés : %s", " ; ".join(problems))
+        return [], None
+
+    try:
+        records = embed_chunks(chunks, config)
+    except (EmbeddingsUnavailableError, EmbeddingError) as exc:
+        logger.error("Embeddings impossibles : %s — le corpus reste complet.", exc)
+        return [], None
+
+    index_path = index_embeddings(records, config)
+    return records, str(index_path) if index_path else None
+
+
 def _load_catalogue_or_warn(config: Config) -> Any:
     """Charge le catalogue si la configuration en déclare un.
 
@@ -561,58 +640,118 @@ def run_pipeline(
     # SQLite ne le ferait pas.
     catalogue = _load_catalogue_or_warn(config)
 
-    result.documents = _process_sources(
-        sources, config, ruleset, profile, report, worker_count, progress, catalogue
-    )
-    documents = result.documents
+    # -- Traitement par tranches ---------------------------------------------
+    #
+    # Un corpus de plusieurs milliers de documents ne tient pas en mémoire :
+    # mesuré sur le lot 2 du corpus SGG, 6 111 documents occupaient 5,1 Go et
+    # le noyau a tué le processus au moment de l'export — après quatre heures
+    # de calcul, sans rien produire.
+    #
+    # Découper change cela : chaque tranche est traitée, écrite, puis oubliée.
+    # Les étapes qui ont besoin de voir plusieurs documents s'en accommodent :
+    # les doublons relisent les empreintes **depuis la base**, donc une tranche
+    # voit celles qui la précèdent ; le reste est déjà par document.
+    tranches = _decouper(sources, config)
+    premiere_tranche = True
+    dedup_report = None
 
-    # -- Module 9 : doublons -------------------------------------------------
-    known_files: dict[str, str] = {}
-    known_texts: dict[str, str] = {}
-    if do_export:
-        known_files, known_texts = _load_known_hashes(config)
-    dedup_report = find_duplicates(documents, config, known_files, known_texts)
-
-    # -- Module 8 : relations et versions ------------------------------------
-    if progress:
-        progress(len(sources), len(sources), "—", "relations")
-    relation_report = annotate_relations(documents, config)
-    assign_versions(documents)
-
-    # -- Module 10 : qualité --------------------------------------------------
-    if progress:
-        progress(len(sources), len(sources), "—", "qualité")
-    evaluate_all(documents, config)
-    for document in documents:
-        if document.quality and document.validation is ValidationStatus.PENDING:
-            document.validation = suggest_validation(document.quality)
-
-    # -- Comptage (§26) -------------------------------------------------------
-    for document in documents:
-        entry = {
-            "document_id": document.document_id,
-            "filename": document.source.filename,
-            "pages": len(document.pages),
-            "articles": len(document.articles),
-            "quality_score": document.quality.score if document.quality else None,
-            "quality_status": document.quality.status.value if document.quality else None,
-            "validation": document.validation.value,
-            "errors": document.errors,
-        }
-        report.documents.append(entry)
-
-        if document.errors:
-            report.failed += 1
-            report.errors.append(
-                {"document_id": document.document_id, "error": "; ".join(document.errors)}
+    for rang, tranche in enumerate(tranches, start=1):
+        if len(tranches) > 1:
+            logger.info(
+                "Tranche %d/%d : %d document(s).", rang, len(tranches), len(tranche)
             )
-        elif document.quality and document.quality.status is not QualityStatus.OK:
-            report.review_required += 1
-        else:
-            report.succeeded += 1
+        documents = _process_sources(
+            tranche, config, ruleset, profile, report, worker_count, progress, catalogue
+        )
 
-    report.skipped_duplicates = dedup_report.identical_files + dedup_report.identical_texts
+        # -- Module 9 : doublons ---------------------------------------------
+        # Les empreintes connues sont relues à chaque tranche : c'est ce qui
+        # permet à la tranche N de voir les documents de la tranche N-1, déjà
+        # écrits en base.
+        known_files: dict[str, str] = {}
+        known_texts: dict[str, str] = {}
+        if do_export:
+            known_files, known_texts = _load_known_hashes(config)
+        rapport_tranche = find_duplicates(documents, config, known_files, known_texts)
+        dedup_report = _fusionner_doublons(dedup_report, rapport_tranche)
+
+        # -- Module 8 : relations et versions --------------------------------
+        if progress:
+            progress(len(sources), len(sources), "—", "relations")
+        relation_report = annotate_relations(documents, config)
+        assign_versions(documents)
+
+        # -- Module 10 : qualité ----------------------------------------------
+        if progress:
+            progress(len(sources), len(sources), "—", "qualité")
+        evaluate_all(documents, config)
+        for document in documents:
+            if document.quality and document.validation is ValidationStatus.PENDING:
+                document.validation = suggest_validation(document.quality)
+
+        # -- Comptage (§26) ---------------------------------------------------
+        for document in documents:
+            entry = {
+                "document_id": document.document_id,
+                "filename": document.source.filename,
+                "pages": len(document.pages),
+                "articles": len(document.articles),
+                "quality_score": document.quality.score if document.quality else None,
+                "quality_status": (
+                    document.quality.status.value if document.quality else None
+                ),
+                "validation": document.validation.value,
+                "errors": document.errors,
+            }
+            report.documents.append(entry)
+
+            if document.errors:
+                report.failed += 1
+                report.errors.append(
+                    {
+                        "document_id": document.document_id,
+                        "error": "; ".join(document.errors),
+                    }
+                )
+            elif document.quality and document.quality.status is not QualityStatus.OK:
+                report.review_required += 1
+            else:
+                report.succeeded += 1
+
+        # -- Suivi, rétention, écriture de la tranche ------------------------
+        if config.get("tracking.enabled", True):
+            result.tickets.extend(_record_tracking(documents, config))
+
+        purges, octets = purge_ocr_pdfs(
+            documents, str(config.get("ocr.keep_sidecar_for", "all"))
+        )
+        result.purged_ocr_pdfs += purges
+        result.purged_bytes += octets
+
+        result.chunks.extend(_fragmenter(documents, config))
+
+        if do_export and len(tranches) > 1:
+            from bldp.core.storage.exporters import export_slice
+
+            export_slice(documents, config, first=premiere_tranche)
+
+        if len(tranches) > 1:
+            # C'est ici que la mémoire se libère : la tranche est écrite, elle
+            # n'a plus de raison d'exister. Sans cette ligne, découper ne
+            # servirait à rien.
+            documents = []
+        else:
+            result.documents = documents
+        premiere_tranche = False
+
+    documents = result.documents
+    report.skipped_duplicates = (
+        dedup_report.identical_files + dedup_report.identical_texts
+        if dedup_report
+        else 0
+    )
     report.skipped_existing = list(result.skipped_existing)
+    par_tranches = len(tranches) > 1
 
     # -- Chunking, embeddings, index -----------------------------------------
     wants_embeddings = (
@@ -622,36 +761,33 @@ def run_pipeline(
     if wants_embeddings:
         if progress:
             progress(len(sources), len(sources), "—", "embeddings")
-        result.chunks, records, result.index_path = _run_embeddings(documents, config)
+        # Les embeddings travaillent sur les fragments déjà produits par
+        # tranche : inutile de reconstruire les documents pour cela.
+        records, result.index_path = _vectoriser(result.chunks, config)
         result.embeddings_count = len(records)
-    else:
-        from bldp.core.chunking import chunk_documents
-
-        # Les fragments sont produits même sans embeddings : ils sont utiles
-        # tels quels, et permettent d'indexer plus tard sans tout retraiter.
-        result.chunks = chunk_documents(documents, config)
-
-    # -- Journal de suivi ----------------------------------------------------
-    # Consigné **après** le contrôle qualité : l'étape proposée à chaque
-    # ticket dépend de ce que la qualité a constaté.
-    if config.get("tracking.enabled", True):
-        result.tickets = _record_tracking(documents, config)
-
-    # -- Rétention des PDF OCRisés -------------------------------------------
-    # Appliquée **après** le contrôle qualité : le mode « review » conserve le
-    # PDF précisément pour les documents qu'un humain devra examiner.
-    policy = str(config.get("ocr.keep_sidecar_for", "all"))
-    result.purged_ocr_pdfs, result.purged_bytes = purge_ocr_pdfs(documents, policy)
 
     # -- Exports --------------------------------------------------------------
     if do_export:
         if progress:
             progress(len(sources), len(sources), "—", "export")
-        result.exports = export_all(documents, config, result.chunks)
-        if result.skipped_existing:
-            # Des documents ont été sautés : les fichiers doivent refléter le
-            # corpus entier, pas seulement le lot courant.
-            result.exports.update(_export_corpus(config, result.chunks))
+        if par_tranches:
+            # Chaque tranche s'est déjà écrite. Restent les agrégats, qui
+            # exigent le corpus entier — on le parcourt sans le charger.
+            from bldp.core.storage.exporters import export_aggregates, export_chunks_jsonl
+            from bldp.core.storage.sqlite_store import LegalDatabase, iter_documents
+
+            with LegalDatabase(config.path("database"), create=False) as base:
+                result.exports = export_aggregates(iter_documents(base), config)
+            if result.chunks:
+                chemin = config.path("exports") / "chunks.jsonl"
+                export_chunks_jsonl(result.chunks, chemin)
+                result.exports["chunks_jsonl"] = str(chemin)
+        else:
+            result.exports = export_all(documents, config, result.chunks)
+            if result.skipped_existing:
+                # Des documents ont été sautés : les fichiers doivent refléter
+                # le corpus entier, pas seulement le lot courant.
+                result.exports.update(_export_corpus(config, result.chunks))
         # Les vecteurs sont persistés **après** l'export : les tables `chunks`
         # et `embeddings` référencent `documents`, qui n'existe en base qu'une
         # fois l'export effectué. Les écrire plus tôt violerait la contrainte

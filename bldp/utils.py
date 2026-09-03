@@ -340,12 +340,20 @@ def read_json(path: str | Path) -> Any:
         return json.load(handle)
 
 
-def write_jsonl(path: str | Path, records: Iterable[dict]) -> int:
-    """Écrit un fichier JSON Lines et renvoie le nombre d'enregistrements."""
+def write_jsonl(
+    path: str | Path, records: Iterable[dict], append: bool = False
+) -> int:
+    """Écrit un fichier JSON Lines et renvoie le nombre d'enregistrements.
+
+    Args:
+        append: ajouter à la suite au lieu d'écraser. C'est ce qui permet
+            d'exporter un corpus par tranches sans jamais le tenir entier en
+            mémoire — chaque tranche s'écrit et s'oublie.
+    """
     target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     count = 0
-    with target.open("w", encoding="utf-8") as handle:
+    with target.open("a" if append else "w", encoding="utf-8") as handle:
         for record in records:
             handle.write(json.dumps(record, ensure_ascii=False))
             handle.write("\n")
