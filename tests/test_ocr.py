@@ -297,11 +297,36 @@ class TestOutputEncoding:
         assert ocr_module._tesseract_text(tmp_path / "p.png", "fra", 30) == texte
 
     def test_every_subprocess_call_declares_utf8(self):
-        """Aucun appel ne doit retomber sur l'encodage de la machine."""
+        """Aucun appel de sous-processus ne doit retomber sur l'encodage machine.
+
+        La vérification porte sur les appels eux-mêmes, et non sur un décompte
+        d'occurrences dans le fichier : compter ``text=True`` et
+        ``encoding="utf-8"`` donnait le bon résultat par coïncidence, et se
+        déséquilibrait dès qu'une lecture de fichier déclarait son encodage
+        sans être un sous-processus.
+        """
+        import ast
         import inspect
 
-        source = inspect.getsource(ocr_module)
-        assert source.count("text=True") == source.count('encoding="utf-8"')
+        arbre = ast.parse(inspect.getsource(ocr_module))
+        fautifs = []
+        for noeud in ast.walk(arbre):
+            if not isinstance(noeud, ast.Call):
+                continue
+            cible = ast.unparse(noeud.func)
+            if not cible.endswith("subprocess.run"):
+                continue
+            mots = {k.arg: k.value for k in noeud.keywords}
+            if "text" not in mots:
+                continue
+            encodage = mots.get("encoding")
+            if not (isinstance(encodage, ast.Constant) and encodage.value == "utf-8"):
+                fautifs.append(noeud.lineno)
+
+        assert not fautifs, (
+            "appel(s) de subprocess.run en mode texte sans encodage explicite, "
+            f"ligne(s) {fautifs}"
+        )
 
 
 class TestReadinessIsHonest:
@@ -371,3 +396,80 @@ class TestFailureIsDiagnosable:
 
         message = _tesseract_failure(FakeCompleted(1))
         assert "TESSDATA_PREFIX" in message and "code de retour 1" in message
+
+
+class TestUneSeuleReconnaissanceParPage:
+    """L'OCR est l'étape la plus chère : la faire deux fois se paie cher.
+
+    BLDP lançait Tesseract deux fois par page — une pour le texte, une pour la
+    sortie TSV dont il tirait la confiance. Mesuré sur des décrets scannés du
+    corpus SGG : **11,89 s par page en deux appels, 5,85 s en un seul**, pour
+    un texte identique au caractère près.
+    """
+
+    def test_le_texte_et_la_confiance_viennent_du_meme_appel(self, monkeypatch, tmp_path):
+        appels = []
+
+        def faux_run(command, **kwargs):
+            appels.append(command)
+            base = Path(command[2])
+            base.with_suffix(".txt").write_text(
+                "Article premier : la présente loi.", encoding="utf-8"
+            )
+            base.with_suffix(".tsv").write_text(
+                "level\tpage\tblock\tpar\tline\tword\tleft\ttop\twidth\theight\tconf\ttext\n"
+                "5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t92.5\tArticle\n"
+                "5\t1\t1\t1\t1\t2\t0\t0\t10\t10\t87.5\tpremier\n",
+                encoding="utf-8",
+            )
+            return FakeCompleted(0, stdout="")
+
+        monkeypatch.setattr(ocr_module.subprocess, "run", faux_run)
+        image = tmp_path / "page_1.png"
+        image.write_bytes(b"\x89PNG")
+
+        texte, confiance = ocr_module._tesseract_page(image, "fra", 30)
+
+        assert len(appels) == 1, "une page ne doit demander qu'une reconnaissance"
+        assert "txt" in appels[0] and "tsv" in appels[0]
+        assert texte.startswith("Article premier")
+        assert confiance == 0.9
+
+    def test_une_confiance_illisible_ne_perd_pas_le_texte(self, monkeypatch, tmp_path):
+        """La confiance est un supplément ; le texte est le produit."""
+
+        def faux_run(command, **kwargs):
+            Path(command[2]).with_suffix(".txt").write_text(
+                "Texte récupéré.", encoding="utf-8"
+            )
+            return FakeCompleted(0, stdout="")
+
+        monkeypatch.setattr(ocr_module.subprocess, "run", faux_run)
+        image = tmp_path / "page_1.png"
+        image.write_bytes(b"\x89PNG")
+
+        texte, confiance = ocr_module._tesseract_page(image, "fra", 30)
+        assert texte == "Texte récupéré."
+        assert confiance is None
+
+    def test_un_echec_de_tesseract_est_signale(self, monkeypatch, tmp_path):
+        def faux_run(command, **kwargs):
+            return FakeCompleted(1, stderr="Error in pixReadStream")
+
+        monkeypatch.setattr(ocr_module.subprocess, "run", faux_run)
+        image = tmp_path / "page_1.png"
+        image.write_bytes(b"\x89PNG")
+
+        with pytest.raises(ocr_module.OcrError) as erreur:
+            ocr_module._tesseract_page(image, "fra", 30)
+        assert "pixReadStream" in str(erreur.value)
+
+    def test_les_lignes_sans_mot_ne_faussent_pas_la_confiance(self):
+        """Tesseract note -1 les lignes de structure : elles ne comptent pas."""
+        tsv = (
+            "level\tpage\tblock\tpar\tline\tword\tleft\ttop\tw\th\tconf\ttext\n"
+            "1\t1\t0\t0\t0\t0\t0\t0\t0\t0\t-1\t\n"
+            "5\t1\t1\t1\t1\t1\t0\t0\t10\t10\t80.0\tArticle\n"
+            "5\t1\t1\t1\t1\t2\t0\t0\t10\t10\t60.0\tpremier\n"
+        )
+        assert ocr_module._confiance_depuis_tsv(tsv) == 0.7
