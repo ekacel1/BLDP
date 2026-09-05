@@ -166,6 +166,14 @@ def ajouter_dossier(archive: zipfile.ZipFile, dossier: Path, prefixe: str) -> in
 
 
 def main() -> int:
+    # La console Windows parle cp1252 : une fleche ou un guillemet francais y
+    # leve une exception, et le script meurt APRES avoir ecrit l'archive — en
+    # laissant croire qu'il a echoue. On force donc la sortie en UTF-8.
+    for flux in (sys.stdout, sys.stderr):
+        if hasattr(flux, "reconfigure"):
+            flux.reconfigure(encoding="utf-8", errors="replace")
+
+
     parseur = argparse.ArgumentParser(
         description="Empaquette un lot traité avec son manifeste de reconstitution."
     )
