@@ -46,3 +46,7 @@ Thumbs.db
 # Aucun document juridique reel ne doit entrer dans le depot (regle fondatrice).
 # Le motif « data/** » ne les couvrait pas : ces dossiers sont ailleurs.
 lot*/
+
+# Sorties d execution des carnets : le CLI Colab ecrit « <nom>_output.ipynb »
+# a cote de l entree. Ce sont des traces de session, pas des sources.
+notebooks/*_output.ipynb
