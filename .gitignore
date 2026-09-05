@@ -39,3 +39,10 @@ htmlcov/
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Dossiers de travail d'un lot : lot1/, lot2/, lot2local/...
+# Ils contiennent le corpus reel — bases SQLite de plusieurs dizaines de Mo,
+# JSONL d'articles, et surtout les PDF OCRises des documents eux-memes.
+# Aucun document juridique reel ne doit entrer dans le depot (regle fondatrice).
+# Le motif « data/** » ne les couvrait pas : ces dossiers sont ailleurs.
+lot*/
