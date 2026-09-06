@@ -8,7 +8,7 @@ système de recherche/RAG.
 > En cas de doute, le pipeline ne devine pas. Il signale, et demande une
 > validation humaine.
 
-[![Tests](https://img.shields.io/badge/tests-531%20passants-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-865%20passants-brightgreen)](#tests)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](#installation)
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-lightgrey)](LICENSE)
 
@@ -19,6 +19,7 @@ système de recherche/RAG.
 - [Ce que fait BLDP](#ce-que-fait-bldp)
 - [Installation](#installation)
 - [Utilisation](#utilisation)
+- [Collecter le corpus](#collecter-le-corpus)
 - [Architecture](#architecture)
 - [Formats supportés](#formats-supportés)
 - [Formats de sortie](#formats-de-sortie)
@@ -291,6 +292,76 @@ python -m bldp serve
 Elle permet de déposer un PDF, suivre son traitement, comparer le texte
 d'origine au texte extrait, valider, et télécharger les exports. Aucune
 ressource externe n'est chargée.
+
+---
+
+## Collecter le corpus
+
+Le pipeline traite les PDF qu'on lui donne. Reste à les obtenir : le corpus
+béninois se construit **tranche par tranche** depuis l'index du Secrétariat
+Général du Gouvernement, et cette chaîne-là a ses propres règles.
+
+```
+  VPS                          VM Colab (éphémère)          Téléphone
+  ───                          ───────────────────          ─────────
+  pilote le cycle       ──→    collecte + traitement  ──→   copie durable
+  stocke                       2 cœurs, détruite ensuite
+  allumé en permanence
+```
+
+Une commande suffit, depuis le serveur :
+
+```bash
+/opt/bldp-exploitation/lancer_tranche.sh
+```
+
+Elle met le dépôt à jour, alloue une VM Colab, y exécute
+[`notebooks/collecte_traitement_sgg.ipynb`](notebooks/collecte_traitement_sgg.ipynb),
+puis rend la VM — y compris en cas d'erreur.
+
+### Trois règles qui viennent de l'expérience
+
+**Les sources partent sur le serveur avant que le traitement commence.** Une VM
+Colab gratuite est fournie « au mieux » et peut disparaître en pleine
+exécution. C'est arrivé : 2 483 PDF et 90 minutes de calcul perdus d'un coup.
+Les mêmes fichiers étaient déjà sur le VPS ; seul le traitement fut à refaire,
+et la reprise les a repris de là **sans redemander un seul document au SGG**.
+
+**Rien ne s'efface avant vérification d'empreinte.** L'archive contient le
+corpus traité et le manifeste de reconstitution — **pas les PDF**. Effacer les
+sources sans les avoir rapatriées détruirait les seuls originaux. Le
+rapatriement dépose un reçu attestant empreinte et comptes ; `liberer.sh`
+n'efface que sur présentation de ce reçu, et refuse au moindre écart.
+
+**Une seconde entre deux requêtes.** Ce n'est pas négociable : c'est ce qui est
+correct envers une administration, et ce qui évite de se faire bloquer.
+
+### Où lire la suite
+
+| Document | Ce qu'il couvre |
+|---|---|
+| [`docs/RELAIS.md`](docs/RELAIS.md) | **Tout, pour reprendre sans rien connaître** : état du corpus, installation, cycle pas à pas, catalogue des pannes rencontrées avec leur cause réelle. |
+| [`docs/EXPLOITATION.md`](docs/EXPLOITATION.md) | Le même terrain vu depuis un poste de travail. |
+| [`docs/TERMUX.md`](docs/TERMUX.md) | Automatiser le rapatriement sur téléphone, et le reçu qui autorise l'effacement. |
+| [`scripts/vps/`](scripts/vps/) | Les scripts eux-mêmes. |
+
+### Ce qu'on sait du terrain
+
+Mesuré sur une VM Colab gratuite, deux cœurs :
+
+| Grandeur | Valeur |
+|---|---|
+| Traitement | **1,1 à 1,2 s/document** |
+| Téléchargement au SGG | ~1,2 à 1,8 s/document |
+| Documents par page d'index | 16,5 à 18 |
+| Sources | 1,2 à 1,7 Mo/document |
+| Archive | ~25 Ko/document |
+| Documents nécessitant un OCR | **~20 %** — mais ils consomment l'essentiel du temps |
+
+**Ne demandez pas de GPU.** Le runtime `--gpu T4` donne les mêmes deux cœurs
+sur un processeur plus ancien, et aucun outil de la chaîne — Tesseract,
+Ghostscript, PyMuPDF, unpaper — n'a de version CUDA. La carte resterait
+inutilisée. Elle deviendra utile le jour où les embeddings seront activés.
 
 ---
 
@@ -759,7 +830,7 @@ python -m pytest
 python -m pytest --cov=bldp --cov-report=term-missing
 ```
 
-531 tests couvrent notamment :
+867 tests — 865 passants, 2 sautes faute de binaires OCR — couvrent notamment :
 
 - extraction native et OCR (mocké — les binaires ne sont pas requis) ;
 - **préservation du contenu juridique** au nettoyage (articles, alinéas,
