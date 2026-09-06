@@ -55,9 +55,10 @@ VPS possède déjà, et ne sollicite le SGG que pour ce qui manque vraiment.
 | lot 2 | ~150 → 306 | 6 110 | `lot2-corpus-20260905T064429Z.zip` (154 Mo) | `84b1c9d269afe6900646cbcd7039366f6d0cdee9735b0abe0d0bee03cb855431` |
 | lot 3 | 307 → 331 | 438 | `lot3-corpus-20260905T233947Z.zip` (10,7 Mo) | `237320711d7f7b73e271a83c19c77fcfa35d8c6cd1a8d5b2b53e31b4383d2b0c` |
 | lot 4 | 332 → 481 | 2 483 | `lot4-corpus-20260906T113745Z.zip` (41,6 Mo) | `624b0f9c476ab1ba1bc5e14af2770099b5d19021cd985cc3a2016ea718e3b0c6` |
+| lot 5 | 482 → 631 | 2 718 | `lot5-corpus-20260906T134909Z.zip` (59,2 Mo) | `b6a8d3684353a392db6ca9b736550f4a692f80cbc0a3683ac98cff8cccdfb76c` |
 
 L'index des décrets du SGG compte environ **1 300 pages** ; il en restera
-environ **820** après le lot 4 : il en reste ~7 tranches de 150 pages.
+environ **670** après le lot 5 : il en reste ~4 tranches de 150 pages.
 
 ### Ce que contient une archive
 
@@ -245,7 +246,7 @@ Mesures du lot 3 puis du lot 4 :
 
 | Grandeur | Mesure |
 |---|---|
-| Traitement | **1,1 à 1,2 s/document** sur 2 fils — confirmé sur 438 puis 2 483 documents |
+| Traitement | **0,8 à 1,2 s/document** sur 2 fils — mesuré sur 438, 2 483 puis 2 718 documents |
 | Documents par page d'index | **16,5 à 17,5** |
 | Sources | **1,24 à 1,72 Mo/document**, soit ~25 Mo par page |
 | Archive | **~24,5 Ko/document** — 10,7 Mo pour 438 documents |
