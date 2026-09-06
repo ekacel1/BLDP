@@ -336,6 +336,72 @@ n'efface que sur présentation de ce reçu, et refuse au moindre écart.
 **Une seconde entre deux requêtes.** Ce n'est pas négociable : c'est ce qui est
 correct envers une administration, et ce qui évite de se faire bloquer.
 
+### Rapatrier sur le téléphone
+
+Le VPS n'est qu'un relais : la copie durable est sur le téléphone. Mais **le
+serveur ne peut pas joindre un téléphone** — pas d'adresse stable, NAT
+opérateur, veille agressive. C'est donc au téléphone d'aller chercher.
+
+Deux transferts, dans cet ordre, sous Termux :
+
+```bash
+termux-wake-lock
+tmux new -s dl
+
+# 1. l'archive — quelques dizaines de Mo
+until rsync -avP root@191.96.1.191:/opt/bldp/archives/lot5-corpus-*.zip ~/legal-data/; do
+  sleep 15
+done
+sha256sum ~/legal-data/lot5-corpus-*.zip
+
+# 2. les sources — plusieurs Go, l'étape longue
+until rsync -avP root@191.96.1.191:/opt/bldp/lot5/input/decrets/ ~/legal-data/lot5-sources/; do
+  sleep 15
+done
+ls -1 ~/legal-data/lot5-sources/*.pdf | wc -l
+```
+
+#### Pourquoi chaque morceau
+
+| Élément | Ce qu'il empêche |
+|---|---|
+| `termux-wake-lock` | Android suspend les processus dès que l'écran s'éteint. Sans lui, un transfert de 4 Go s'arrête au premier verrouillage et ne reprend qu'au prochain déverrouillage. |
+| `tmux new -s dl` | La session survit à la fermeture de Termux et au passage en arrière-plan. `Ctrl-b` puis `d` détache ; `tmux attach -t dl` revient. |
+| `until … done` | `rsync` sort en erreur quand la connexion tombe — ce qui arrive sur un réseau mobile. La boucle relance jusqu'à ce qu'il réussisse. Sans elle, un transfert de 4 Go échoue sur une coupure de trois secondes. |
+| `sleep 15` | Attendre avant de relancer. Sans pause, une coupure durable devient une rafale de connexions, et le serveur bannit l'adresse pour excès de tentatives. |
+| `-a` | Mode archive : récursif, et préserve dates et permissions. |
+| `-P` | `--partial` **garde le fichier incomplet** pour que la tentative suivante reprenne où elle en était, au lieu de tout retélécharger ; `--progress` montre où on en est. C'est ce qui rend la boucle `until` supportable. |
+| **pas de `--delete`** | Ne jamais répliquer les suppressions. Le VPS efface ses sources une fois rapatriées ; si le téléphone reflétait ces suppressions, il effacerait les originaux qu'il vient de sauver. |
+| `sha256sum` | L'empreinte est la **seule** preuve que l'archive est arrivée intacte. C'est elle qui autorise l'effacement côté serveur — un transfert « qui a l'air fini » n'est pas une preuve. |
+| `ls … \| wc -l` | Même rôle pour les sources : le compte de fichiers atteste qu'aucun ne manque. Une archive vérifiée ne dit rien des PDF, qu'elle ne contient pas. |
+
+**Et surtout, l'ordre.** L'archive porte le corpus traité et le manifeste de
+reconstitution — **pas les PDF**. Effacer les sources du serveur sans les avoir
+rapatriées détruit les seuls originaux. D'où la règle : les deux transferts,
+les deux vérifications, et seulement ensuite l'effacement.
+
+#### Le faire tourner tout seul
+
+Ces commandes à la main deviennent vite pénibles, une tranche toutes les deux
+heures. `bldp-sync.sh` les enchaîne, vérifie, puis dépose sur le VPS un **reçu**
+attestant l'empreinte de l'archive et le compte des sources.
+
+```bash
+termux-job-scheduler --script ~/bin/bldp-sync.sh \
+    --period-ms 3600000 --network unmetered --persisted true
+```
+
+Une tentative par heure, **en Wi-Fi uniquement**, qui survit au redémarrage —
+c'est Android qui choisit le moment selon l'état de la batterie.
+
+Côté serveur, `liberer.sh` n'efface que sur présentation d'un reçu valide, et
+refuse au moindre écart : reçu absent, compte qui ne correspond pas, archive
+disparue, empreinte changée. **Le téléphone constate, le serveur décide.** C'est
+le §33 du cahier des charges rendu mécanique : rien ne s'efface sur une
+supposition.
+
+Le détail de l'installation est dans [`docs/TERMUX.md`](docs/TERMUX.md).
+
 ### Où lire la suite
 
 | Document | Ce qu'il couvre |
