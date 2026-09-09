@@ -139,6 +139,89 @@ _INLINE_CITATION_RE = re.compile(
 )
 
 
+#: Debut de preambule, tolerant aux mutilations de l'OCR.
+#:
+#: « CITATION_LINE_RE » exige que la ligne commence par « vu » ou « considerant ».
+#: Sur les scans anciens, l'OCR rend « VU » en « \U », « JU », « \(] », « \,u » :
+#: le visa echappe alors au filtre et son numero est pris pour celui du document.
+#:
+#: On ne cherche pas a reconnaitre TOUS les visas — seulement le PREMIER, qui
+#: borne l'intitule. C'est suffisant pour proteger le numero, et bien plus sur
+#: que de poursuivre chaque variante d'OCR.
+#:
+#: Deux conditions cumulees, pour ne pas amputer un vrai intitule : la ligne
+#: doit s'ouvrir sur un residu suivi d'un « u », ET citer une reference
+#: numerotee plus loin.
+_OUVERTURE_VISA_RE = re.compile(
+    r"^\s*[^\w\s]{0,4}\s*(?:[jvJV\\(\[,.]{0,3}\s*[uU]|vu|consid[ée]rant)\b",
+    re.IGNORECASE,
+)
+_REFERENCE_NUMEROTEE_RE = re.compile(r"\bn\s*[°ºo\"'’]?\s*\d{2,4}\s*[-–]", re.IGNORECASE)
+
+
+def ouvre_le_preambule(ligne: str) -> bool:
+    """La ligne marque-t-elle le debut des visas ?"""
+    if CITATION_LINE_RE.match(ligne):
+        return True
+    return bool(
+        _OUVERTURE_VISA_RE.match(ligne) and _REFERENCE_NUMEROTEE_RE.search(ligne)
+    )
+
+
+def entete(text: str, lignes_max: int = 12) -> str:
+    """Le texte avant le preambule : la ou le numero du document figure.
+
+    Un texte reglementaire s'ouvre sur son intitule — « DECRET N° 2013-211 du
+    ... » — puis enchaine les visas. Chercher le numero dans tout le document
+    revient a prendre le premier rencontre, souvent celui d'un texte cite :
+    1 357 documents du corpus portaient ainsi « 90-032 ».
+    """
+    lignes = text.split("\n")
+    for i, ligne in enumerate(lignes):
+        if ouvre_le_preambule(ligne):
+            return "\n".join(lignes[:i])
+    return "\n".join(lignes[:lignes_max])
+
+
+#: Numero porte par la reference du SGG : « decret-2012-465 » -> « 2012-465 ».
+_NUMERO_DANS_REFERENCE_RE = re.compile(r"^[a-z]+[-_](\d{2,4})[-_](\d{1,4})", re.IGNORECASE)
+
+
+def numero_de_reference(*candidats: str | None) -> str | None:
+    """Numero deduit de la reference du SGG, sans passer par l'OCR.
+
+    L'URL du document (« doc/decret-2012-465/ ») porte son numero, et
+    « source_url » est renseigne sur tout le corpus. C'est un canal propre la
+    ou le texte est bruite.
+    """
+    for candidat in candidats:
+        if not candidat:
+            continue
+        m = _NUMERO_DANS_REFERENCE_RE.match(str(candidat).strip())
+        if m:
+            return f"{m.group(1)}-{int(m.group(2)):03d}"
+    return None
+
+
+def memes_numeros(a: str | None, b: str | None) -> bool:
+    """Deux ecritures designent-elles le meme numero ?
+
+    « 61-037 », « 1961-37 » et « 2018-001/PR/SGG » doivent se comparer sur ce
+    qui les identifie : les deux derniers chiffres de l'annee et la serie. Sans
+    ce cadrage, 6 138 differences de simple notation passaient pour des erreurs.
+    """
+    def cle(valeur):
+        if not valeur:
+            return None
+        m = re.match(r"^(\d{2,4})\s*[-–]\s*(\d{1,4})", re.sub(r"\s+", "", str(valeur)))
+        if not m:
+            return None
+        return m.group(1)[-2:], f"{int(m.group(2)):03d}"
+
+    ka, kb = cle(a), cle(b)
+    return ka is not None and ka == kb
+
+
 def strip_citation_lines(text: str) -> str:
     """Retire les lignes de visa, qui citent d'autres textes.
 
@@ -624,12 +707,40 @@ def extract_metadata(
             type_conf, type_evidence = 0.45, f"{type_evidence} (visa — à vérifier)"
     record("type", doc_type, type_conf, type_evidence)
 
-    number, number_conf, number_evidence = detect_number(own_text, profile)
+    # Couche C : l'intitulé d'abord. C'est là que figure le numéro du document ;
+    # au-delà commencent les visas, dont les numéros ne sont pas les siens.
+    number, number_conf, number_evidence = detect_number(entete(text), profile)
+    if number is None:
+        number, number_conf, number_evidence = detect_number(own_text, profile)
+        if number:
+            number_conf = min(number_conf, 0.60)
+            number_evidence = f"{number_evidence} (hors intitulé)"
     if number is None:
         number, number_conf, number_evidence = detect_number(text, profile)
         if number:
             number_conf = 0.40
             number_evidence = f"{number_evidence} (visa — à vérifier)"
+
+    # Couche D : la référence du SGG ne passe par aucun OCR. On la confronte au
+    # texte plutôt que de choisir l'un des deux à l'aveugle.
+    attendu = numero_de_reference(
+        source.filename if source else None,
+        document_id,
+    )
+    if attendu:
+        if number is None:
+            number, number_conf = attendu, 0.90
+            number_evidence = "référence SGG (aucun numéro lisible dans le texte)"
+        elif not memes_numeros(number, attendu):
+            metadata.warnings.append(
+                f"numéro : le texte porte « {number} », la référence SGG "
+                f"« {attendu} » — la référence est retenue ; le texte cite "
+                "peut-être un visa, ou l'OCR a fauté. À vérifier."
+            )
+            number_evidence = (
+                f"référence SGG « {attendu} » ; le texte portait « {number} »"
+            )
+            number, number_conf = attendu, 0.85
     record("number", number, number_conf, number_evidence)
 
     # Le numéro est détecté avant la date : il sert à localiser l'intitulé.

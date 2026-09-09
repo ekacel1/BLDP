@@ -8,7 +8,7 @@ système de recherche/RAG.
 > En cas de doute, le pipeline ne devine pas. Il signale, et demande une
 > validation humaine.
 
-[![Tests](https://img.shields.io/badge/tests-865%20passants-brightgreen)](#tests)
+[![Tests](https://img.shields.io/badge/tests-892%20passants-brightgreen)](#tests)
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](#installation)
 [![Licence](https://img.shields.io/badge/licence-Apache--2.0-lightgrey)](LICENSE)
 
@@ -896,7 +896,7 @@ python -m pytest
 python -m pytest --cov=bldp --cov-report=term-missing
 ```
 
-867 tests — 865 passants, 2 sautes faute de binaires OCR — couvrent notamment :
+894 tests — 892 passants, 2 sautes faute de binaires OCR — couvrent notamment :
 
 - extraction native et OCR (mocké — les binaires ne sont pas requis) ;
 - **préservation du contenu juridique** au nettoyage (articles, alinéas,
