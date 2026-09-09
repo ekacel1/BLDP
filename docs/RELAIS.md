@@ -110,14 +110,74 @@ VPS possède déjà, et ne sollicite le SGG que pour ce qui manque vraiment.
 
 | Lot | Pages d'index | Documents | Archive | Empreinte SHA-256 |
 |---|---|---|---|---|
-| lot 1 | 1 → ~150 | 2 555 | `lot1-corpus-20260904T200524Z.zip` (144 Mo) | `f4555483deb642a4a18a07266c8e2e22062156e9e3368605655f8cbf65f15d0e` |
-| lot 2 | ~150 → 306 | 6 110 | `lot2-corpus-20260905T064429Z.zip` (154 Mo) | `84b1c9d269afe6900646cbcd7039366f6d0cdee9735b0abe0d0bee03cb855431` |
+| lot 1 | — (fonds LCF préexistant) | 2 555 | `lot1-corpus-20260904T200524Z.zip` (144 Mo) | `f4555483deb642a4a18a07266c8e2e22062156e9e3368605655f8cbf65f15d0e` |
+| lot 2 | 1 → 306 | 6 110 | `lot2-corpus-20260905T064429Z.zip` (154 Mo) | `84b1c9d269afe6900646cbcd7039366f6d0cdee9735b0abe0d0bee03cb855431` |
 | lot 3 | 307 → 331 | 438 | `lot3-corpus-20260905T233947Z.zip` (10,7 Mo) | `237320711d7f7b73e271a83c19c77fcfa35d8c6cd1a8d5b2b53e31b4383d2b0c` |
 | lot 4 | 332 → 481 | 2 483 | `lot4-corpus-20260906T113745Z.zip` (41,6 Mo) | `624b0f9c476ab1ba1bc5e14af2770099b5d19021cd985cc3a2016ea718e3b0c6` |
 | lot 5 | 482 → 631 | 2 718 | `lot5-corpus-20260906T134909Z.zip` (59,2 Mo) | `b6a8d3684353a392db6ca9b736550f4a692f80cbc0a3683ac98cff8cccdfb76c` |
+| lot 6 | 632 → 781 | 2 724 | `lot6-corpus-20260906T230415Z.zip` (47,7 Mo) | *voir le journal du cycle* |
+| lot 7 | 782 → 1081 | 5 950 | `lot7-corpus-20260908T031713Z.zip` (134 Mo) | *voir le journal du cycle* |
+| lot 8 | 932 → 1081 | 5 950 | `lot8-corpus-20260908T114919Z.zip` (134 Mo) | **doublon intégral du lot 7** |
+| lot 9 | 1082 → 1231 | 2 999 | `lot9-corpus-20260908T184318Z.zip` (70,3 Mo) | *voir le journal du cycle* |
+| lot 10 | 1232 → 1381 | 3 000 | `lot10-corpus-20260909T004724Z.zip` | `5c942e3edb9c37b7c3177566709c671105d8eb7b2a99ce3e5c4c3d87ffdef22c` |
+| lot 11 | 1380 → 1499 | 2 400 | `lot11-corpus-20260909T113024Z.zip` (31,6 Mo) | `ec63fd25df153810dabc888d4bfeea2e90e6bdcdd4d8267018c7fca20b972759` |
+| lot 12 | 1498 → 1622 | 2 440 | `lot12-corpus-20260909T220810Z.zip` (33 Mo) | `ee29a62750c00df9cd184b5ffe8dbebe15c0da3cac1a87dc8b02ad77569e5d71` |
 
-L'index des décrets du SGG compte environ **1 300 pages** ; il en restera
-environ **670** après le lot 5 : il en reste ~4 tranches de 150 pages.
+### La collecte est terminée
+
+L'index des décrets du SGG compte **1 619 pages** — établi par recherche
+dichotomique le 9 septembre 2026, puis confirmé par le lot 12 dont les pages
+1620 à 1622 n'ont rien rendu. Les douze lots couvrent les pages **1 à 1619**,
+sans trou.
+
+> Le commit du lot 10 se disait « FINAL, à la fin de l'index ». C'était faux :
+> son `PAGE_FIN` valait 1381. Il manquait 238 pages, soit les décrets de 1960 à
+> 1967 — les plus anciens, ceux de la République du Dahomey. Sur soixante
+> documents échantillonnés dans cette zone, soixante étaient absents du corpus.
+> Les lots 11 et 12 les ont récupérés.
+
+### Combien de documents, réellement
+
+Mesuré par `inventaire.py`, qui lit les exports en flux et compte les
+identifiants distincts :
+
+```
+brut cumulé       : 39 767
+DISTINCTS         : 32 931
+comptés en double :  6 836
+```
+
+| Catégorie | Occurrences |
+|---|---|
+| décrets | 37 212 |
+| lois | 1 532 |
+| ordonnances | 1 007 |
+| accords | 12 |
+| arrêtés | 2 |
+| décisions | 2 |
+
+**Ni les manifestes ni le comptage de fichiers ne donnent ce nombre** : le
+manifeste compte les documents nouveaux dans la passe, l'archive contient tout
+ce que la base tenait à l'empaquetage. Passez par `inventaire.py`.
+
+Les doublons sont de **vrais doublons** — vérifié sur les empreintes SHA-256 des
+fichiers sources, pas sur les identifiants : 6 749 comparaisons, aucune
+divergence. La déduplication à la fusion ne perdra rien.
+
+| Recouvrement | Documents | Cause |
+|---|---|---|
+| lot 7 ∩ lot 8 | **5 950** | Le lot 7 a tourné sur 782→1081 (300 pages) ; le lot 8, configuré sur 932→1081, a refait la même plage. **Un cycle entier perdu.** |
+| lot 2 ∩ lot 3 | 438 | Le lot 3 servait de calibrage sur une plage déjà couverte. |
+| lot 2 ∩ lot 4 | 361 | Glissement de l'index entre deux cycles. |
+| lot 10 ∩ lot 11 | 40 | Chevauchement de 2 pages, **délibéré** — 2 × 20 documents. |
+| lot 11 ∩ lot 12 | 40 | Idem. |
+| autres | 13 | Glissements marginaux. |
+
+Le chevauchement délibéré des deux dernières tranches a coûté exactement ce
+qu'il devait coûter, et garantit qu'aucun document n'est tombé entre deux
+bornes. L'index étant inversé chronologiquement, les nouveaux textes s'insèrent
+en tête et tout glisse vers les pages hautes : sans ce recouvrement, un cycle
+lancé après un ajout laisse un trou invisible.
 
 ### Ce que contient une archive
 
