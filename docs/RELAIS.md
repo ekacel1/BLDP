@@ -11,6 +11,65 @@
 
 ---
 
+## ⚠ Les deux pièges qui coûtent le plus cher
+
+Ces deux-là ont chacun détruit du travail réel. Lisez-les avant de toucher au
+CLI.
+
+### 1. `restart-kernel` fait perdre la VM
+
+```
+[colab] Session '<nom>' appears to be lost (404/401). Cleaning up.
+```
+
+**N'appelez jamais `colab restart-kernel`.** Sur cette version du CLI, elle
+échoue par un `404` sur `/api/kernels` et la session est perdue dans la
+foulée — avec tout ce que la VM contenait.
+
+Constaté deux fois le 9 septembre 2026 : sur le lot 4, puis sur le lot 12 où
+elle a détruit 2 440 PDF déjà téléchargés, alors même que la première
+occurrence était déjà consignée ici.
+
+**À la place**, quand un noyau semble bloqué : ne faites rien. Vérifiez d'abord
+si la VM travaille réellement — comptez les fichiers, regardez leurs
+horodatages. Un client muet ne dit rien de la machine. Si elle est vraiment
+perdue, `colab exec` vous le dira de lui-même.
+
+### 2. `colab exec` ne s'arrête pas sur une cellule en erreur
+
+Il affiche la trace et **passe à la cellule suivante**. Un `raise` dans le
+carnet n'interrompt donc rien : il avertit.
+
+Le 9 septembre, la vérification de place a refusé d'expédier les sources du lot
+12 ; le carnet a poursuivi, construit le catalogue et lancé le traitement de
+2 440 documents dont les originaux n'existaient que sur une VM éphémère. La
+règle « les sources partent avant qu'on traite » était écrite partout et
+n'empêchait rien.
+
+**Le carnet pose donc des jalons** — `ETAPE_PLACE_VERIFIEE`,
+`ETAPE_SOURCES_EXPEDIEES` — et chaque étape critique refuse de travailler si le
+jalon précédent manque. Si vous ajoutez une étape critique, ajoutez son jalon :
+un `raise` seul ne protège de rien.
+
+### Et un corollaire sur l'arrêt
+
+`lancer_tranche.sh` rend la VM par un `trap` sur `EXIT`. Donc `Ctrl-C` ou
+`tmux kill-session` **détruisent la VM et son contenu**. Pour interrompre en
+conservant la machine — par exemple pour relancer un carnet corrigé sur les
+mêmes fichiers déjà téléchargés :
+
+```bash
+pgrep -f lancer_tranche.sh | xargs -r kill -9     # SIGKILL : le trap ne peut pas s'y opposer
+```
+
+Puis relancez `colab exec` sur la **même** session ; la reprise saute ce qui
+est déjà là.
+
+> `pkill -f` avec un motif que votre propre ligne de commande contient tue
+> votre shell. Filtrez sur `/proc/<pid>/cmdline`, pas sur la ligne entière.
+
+---
+
 ## 0. À lire avant de toucher à quoi que ce soit
 
 ### La règle qui prime
