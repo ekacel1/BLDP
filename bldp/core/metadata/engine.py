@@ -745,6 +745,25 @@ def extract_metadata(
 
     # Le numéro est détecté avant la date : il sert à localiser l'intitulé.
     date_iso, date_conf, date_evidence = detect_date(text, profile, number)
+
+    # La date subit le même piège que le numéro : le 11 décembre 1990, jour de
+    # la Constitution, est visé par à peu près tout, et se retrouvait porté par
+    # des textes de 1999. L'année de la référence SGG permet de le voir.
+    #
+    # On signale sans corriger : un texte signé en décembre peut légitimement
+    # porter le numéro de l'année suivante. Écraser la date lue remplacerait une
+    # incertitude par une invention.
+    if date_iso and attendu:
+        annee_reference = attendu.split("-")[0]
+        if len(annee_reference) == 4 and date_iso[:4] != annee_reference:
+            metadata.warnings.append(
+                f"date : le texte donne « {date_iso} », mais sa référence SGG "
+                f"« {attendu} » annonce {annee_reference}. La date lue est "
+                "conservée — un visa mal découpé est possible. À vérifier."
+            )
+            date_conf = min(date_conf, 0.50)
+            date_evidence = f"{date_evidence} (année en désaccord avec la référence)"
+
     record("date", date_iso, date_conf, date_evidence)
 
     title, title_conf, title_evidence = detect_title(own_text, doc_type, number)
