@@ -101,16 +101,16 @@ class TestTransitions:
         """On ne revient pas d'une validation à un état de traitement."""
         ticket = registry.open_ticket("loi_a", "a" * 64)
         registry.advance(ticket.ticket_id, Stage.TRAITE, "pipeline")
-        registry.advance(ticket.ticket_id, Stage.VALIDE, "virgile")
+        registry.advance(ticket.ticket_id, Stage.VALIDE, "admin")
         with pytest.raises(TrackingError, match="interdit"):
-            registry.advance(ticket.ticket_id, Stage.TRAITE, "virgile")
+            registry.advance(ticket.ticket_id, Stage.TRAITE, "admin")
 
     def test_the_refusal_names_the_possible_stages(self, registry):
         """Un refus doit dire quoi faire, pas seulement dire non."""
         ticket = registry.open_ticket("loi_a", "a" * 64)
-        registry.advance(ticket.ticket_id, Stage.VALIDE, "virgile") if False else None
+        registry.advance(ticket.ticket_id, Stage.VALIDE, "admin") if False else None
         with pytest.raises(TrackingError) as info:
-            registry.advance(ticket.ticket_id, Stage.ARCHIVE, "virgile")
+            registry.advance(ticket.ticket_id, Stage.ARCHIVE, "admin")
         assert "Étapes possibles" in str(info.value)
 
     @pytest.mark.parametrize("stage", sorted(HUMAN_ONLY_STAGES, key=lambda s: s.value))
@@ -125,16 +125,16 @@ class TestTransitions:
     def test_a_named_person_may_decide(self, registry):
         ticket = registry.open_ticket("loi_a", "a" * 64)
         registry.advance(ticket.ticket_id, Stage.TRAITE, "pipeline")
-        valide = registry.advance(ticket.ticket_id, Stage.VALIDE, "virgile", "relu")
+        valide = registry.advance(ticket.ticket_id, Stage.VALIDE, "admin", "relu")
         assert valide.stage is Stage.VALIDE
 
     def test_a_decision_can_be_reopened(self, registry):
         """Un juriste doit pouvoir rouvrir un dossier sans toucher la base."""
         ticket = registry.open_ticket("loi_a", "a" * 64)
         registry.advance(ticket.ticket_id, Stage.TRAITE, "pipeline")
-        registry.advance(ticket.ticket_id, Stage.VALIDE, "virgile")
+        registry.advance(ticket.ticket_id, Stage.VALIDE, "admin")
         assert Stage.A_VERIFIER in allowed_transitions(Stage.VALIDE)
-        rouvert = registry.advance(ticket.ticket_id, Stage.A_VERIFIER, "virgile", "doute")
+        rouvert = registry.advance(ticket.ticket_id, Stage.A_VERIFIER, "admin", "doute")
         assert rouvert.stage is Stage.A_VERIFIER
 
     def test_a_doubtful_document_is_reachable_straight_from_import(self):
@@ -155,11 +155,11 @@ class TestJournal:
     def test_every_change_is_recorded_with_its_author(self, registry):
         ticket = registry.open_ticket("loi_a", "a" * 64)
         registry.advance(ticket.ticket_id, Stage.TRAITE, "pipeline", "traitement ok")
-        registry.assign(ticket.ticket_id, "virgile", "chef")
-        registry.advance(ticket.ticket_id, Stage.VALIDE, "virgile", "conforme au JO")
+        registry.assign(ticket.ticket_id, "admin", "chef")
+        registry.advance(ticket.ticket_id, Stage.VALIDE, "admin", "conforme au JO")
 
         journal = registry.history(ticket.ticket_id)
-        assert [e.actor for e in journal][-1] == "virgile"
+        assert [e.actor for e in journal][-1] == "admin"
         assert any(e.detail == "conforme au JO" for e in journal)
         assert all(e.at for e in journal), "chaque fait porte sa date"
 
@@ -168,7 +168,7 @@ class TestJournal:
         ticket = registry.open_ticket("loi_a", "a" * 64)
         registry.advance(ticket.ticket_id, Stage.TRAITE, "pipeline")
         registry.advance(ticket.ticket_id, Stage.A_VERIFIER, "pipeline")
-        registry.advance(ticket.ticket_id, Stage.EN_REVUE, "virgile")
+        registry.advance(ticket.ticket_id, Stage.EN_REVUE, "admin")
         passages = [
             (e.from_stage, e.to_stage)
             for e in registry.history(ticket.ticket_id)
@@ -184,8 +184,8 @@ class TestJournal:
         """Un ticket bloqué sans trace serait invisible partout."""
         ticket = registry.open_ticket("loi_a", "a" * 64)
         registry.advance(ticket.ticket_id, Stage.TRAITE, "pipeline")
-        registry.advance(ticket.ticket_id, Stage.VALIDE, "virgile")
-        registry.advance(ticket.ticket_id, Stage.ARCHIVE, "virgile")
+        registry.advance(ticket.ticket_id, Stage.VALIDE, "admin")
+        registry.advance(ticket.ticket_id, Stage.ARCHIVE, "admin")
         assert registry.get(ticket.ticket_id).stage is Stage.ARCHIVE
 
 
@@ -212,7 +212,7 @@ class TestPipelineIntegration:
         run_pipeline(corpus, config)
         with TrackingRegistry(config.path("database")) as registre:
             ticket = registre.list_tickets()[0]
-            registre.advance(ticket.ticket_id, Stage.VALIDE, "virgile", "relu")
+            registre.advance(ticket.ticket_id, Stage.VALIDE, "admin", "relu")
 
         run_pipeline(corpus, config)
 
@@ -225,7 +225,7 @@ class TestPipelineIntegration:
         run_pipeline(corpus, config)
         with TrackingRegistry(config.path("database")) as registre:
             for ticket in registre.list_tickets():
-                registre.advance(ticket.ticket_id, Stage.VALIDE, "virgile")
+                registre.advance(ticket.ticket_id, Stage.VALIDE, "admin")
 
         result = run_pipeline(corpus, config, resume=True)
         assert result.report.total == 0

@@ -248,8 +248,8 @@ avec lui. Le registre de suivi tient ce rôle.
 ```bash
 python -m bldp suivi etat                     # tableau de bord par étape
 python -m bldp suivi liste --etape a_verifier # la file de relecture
-python -m bldp suivi assigner loi_2025_09 virgile
-python -m bldp suivi avancer loi_2025_09 valide --par virgile --motif "conforme au JO"
+python -m bldp suivi assigner loi_2025_09 admin
+python -m bldp suivi avancer loi_2025_09 valide --par admin --motif "conforme au JO"
 python -m bldp suivi montrer loi_2025_09      # la fiche et son journal complet
 ```
 
