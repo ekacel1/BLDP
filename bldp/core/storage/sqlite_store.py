@@ -669,6 +669,7 @@ class LegalDatabase:
                         "confidence": metadata.confidence,
                         "evidence": metadata.evidence,
                         "warnings": metadata.warnings,
+                        "divergences": metadata.divergences,
                     }
                 ),
                 _json(document.errors),
@@ -1057,4 +1058,5 @@ def rebuild_metadata(row: sqlite3.Row) -> DocumentMetadata:
         confidence=extra.get("confidence", {}),
         evidence=extra.get("evidence", {}),
         warnings=extra.get("warnings", []),
+        divergences=extra.get("divergences", []),
     )

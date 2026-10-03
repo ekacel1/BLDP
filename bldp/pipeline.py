@@ -424,6 +424,11 @@ def _confronter_au_catalogue(
         return
 
     ecarts = reconcile(document.metadata, fiche)
+    # Divergences et propositions sont conservées avec le document : le
+    # contrôle qualité en fait des anomalies, la relecture les retrouve.
+    document.metadata.divergences = [
+        e.to_dict() for e in ecarts if e.action in ("diverge", "propose")
+    ]
     divergences = [e for e in ecarts if e.action == "diverge"]
     if divergences:
         logger.info(

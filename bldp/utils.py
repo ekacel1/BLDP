@@ -122,6 +122,75 @@ def normalize_number_dashes(text: str) -> str:
     """
     return _SEPARATOR_BETWEEN_DIGITS_RE.sub("-", text)
 
+
+# ---------------------------------------------------------------------------
+# Numéros officiels : une même référence, plusieurs notations
+# ---------------------------------------------------------------------------
+
+_NUMBER_PREFIX_RE = re.compile(r"^\s*" + NUMERO_PREFIX, re.IGNORECASE)
+
+#: Un numéro officiel décomposé : millésime, numéro d'ordre, variante, et ce
+#: qui suit — code du service émetteur (« /PR/ », « /MJL/DC/SGM ») ou rien.
+_OFFICIAL_NUMBER_RE = re.compile(
+    rf"^(?P<annee>\d{{2,4}})\s*(?:{DASH_CLASS}|[_./])\s*(?P<serie>\d{{1,4}})"
+    r"(?:\s*[-_ ]?\s*(?P<variante>bis|ter|quater)\b)?"
+    r"(?P<reste>.*)$",
+    re.IGNORECASE,
+)
+
+
+def official_number_key(number: str | None) -> tuple[int, int, str] | None:
+    """``(millésime sur 4 chiffres, numéro d'ordre, variante)``, ou ``None``.
+
+    « N° 2018-002/PR/ » → ``(2018, 2, "")`` ; « 96-532 » → ``(1996, 532, "")`` ;
+    « 2015-18 bis » → ``(2015, 18, "bis")``.
+
+    Seul ce qui suit le numéro d'ordre est toléré, et seulement s'il s'agit
+    d'un code de service introduit par « / » : il ne change pas le texte
+    désigné. Tout autre reste (« 2018-002 A ») empêche de conclure.
+    """
+    bare = _NUMBER_PREFIX_RE.sub("", str(number or "")).strip()
+    match = _OFFICIAL_NUMBER_RE.match(bare)
+    if not match:
+        return None
+    rest = match.group("reste").strip()
+    if rest and not rest.startswith("/"):
+        return None
+    year = match.group("annee")
+    if len(year) == 4:
+        millesime = int(year)
+    elif len(year) == 2 and int(year) >= 60:
+        # Mesuré sur le corpus (3 octobre 2026) : les 5 752 numéros à millésime
+        # sur deux chiffres vont tous de « 60 » à « 99 » — la numérotation des
+        # années 1960 à 1990. En dessous de 60, rien ne permet de choisir le
+        # siècle : on ne conclut pas.
+        millesime = 1900 + int(year)
+    else:
+        return None
+    return millesime, int(match.group("serie")), (match.group("variante") or "").lower()
+
+
+def same_official_number(a: str | None, b: str | None) -> bool:
+    """Deux numéros désignent-ils le même texte ?
+
+    « 2018-002/PR/ » et « 2018-002 », « 2015-18 » et « 2015-018 »,
+    « 96-532 » et « 1996-532 » : oui — la notation diffère, pas le texte.
+    « 2024-09 » et « 2024-90 », « 2015-18 » et « 2015-18 bis » : non. Une
+    inversion de chiffres est exactement l'erreur qu'on cherche à voir.
+
+    Quand l'une des deux formes ne se décompose pas, on compare les seuls
+    caractères alphanumériques, préfixe « n° » retiré — sans rapprochement
+    approximatif.
+    """
+    if not a or not b:
+        return False
+    key_a, key_b = official_number_key(a), official_number_key(b)
+    if key_a is not None and key_b is not None:
+        return key_a == key_b
+    reduce = lambda v: "".join(c for c in _NUMBER_PREFIX_RE.sub("", str(v)).lower() if c.isalnum())
+    return reduce(a) == reduce(b)
+
+
 _ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
 
 #: Ordinaux littéraux rencontrés dans les textes juridiques français.

@@ -79,6 +79,7 @@ def document_record(document: Document, include_pages: bool = True) -> dict:
         "metadata_confidence": metadata.confidence,
         "metadata_evidence": metadata.evidence,
         "warnings": list(metadata.warnings),
+        "metadata_divergences": list(metadata.divergences),
         "errors": list(document.errors),
         "duplicates": [link.to_dict() for link in document.duplicates],
         "relations": [relation.to_dict() for relation in document.relations],

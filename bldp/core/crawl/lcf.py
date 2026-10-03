@@ -31,6 +31,14 @@ Ce que le catalogue ne fait **jamais** : donner la date de l'acte. Le champ
 en ligne de la fiche, pas celle de la signature. Sur la loi 2024-09, le PDF
 porte « 20 février 2024 » et la fiche « 2024-03-12 ». Confondre les deux
 daterait faux tout un corpus juridique, silencieusement.
+
+Le **titre** de la fiche, lui, porte souvent la date de l'acte telle que le
+portail l'a saisie : « Arrêté N° 2018-002 du 25 avril 2018 ». Elle sert de
+témoin, et seulement de témoin : elle confirme la date lue dans le document, ou
+elle est **proposée** à côté d'elle quand les deux diffèrent ou que le document
+n'en donne pas. Elle ne comble rien et ne remplace rien — le même portail écrit
+« du 20 févr. 204 ». Sur l'arrêté 2018-002, le document retenait la date d'un
+visa (« 20 mars 2016 ») ; la fiche, elle, avait raison.
 """
 
 from __future__ import annotations
@@ -44,7 +52,7 @@ from typing import Iterator, Optional
 
 from bldp.logging_setup import get_logger
 from bldp.models import DocumentMetadata, DocumentType
-from bldp.utils import NUMERO_PREFIX
+from bldp.utils import NUMERO_PREFIX, same_official_number
 
 logger = get_logger("crawl.lcf")
 
@@ -90,6 +98,64 @@ CATALOGUE_CONFIDENCE = 0.85
 #: Confiance quand le document et le catalogue disent la même chose. Deux
 #: sources indépendantes qui concordent ne laissent guère de place au doute.
 AGREEMENT_CONFIDENCE = 0.98
+
+
+#: Mois français, en toutes lettres ou abrégés comme le fait le SGG.
+_MOIS = {
+    "janvier": 1, "janv": 1, "jan": 1,
+    "fevrier": 2, "février": 2, "fevr": 2, "févr": 2, "fev": 2, "fév": 2,
+    "mars": 3,
+    "avril": 4, "avr": 4,
+    "mai": 5,
+    "juin": 6,
+    "juillet": 7, "juil": 7,
+    "aout": 8, "août": 8,
+    "septembre": 9, "sept": 9, "sep": 9,
+    "octobre": 10, "oct": 10,
+    "novembre": 11, "nov": 11,
+    "decembre": 12, "décembre": 12, "dec": 12, "déc": 12,
+}
+
+#: « du 25 avril 2018 », « du 1er mars 2020 », « du 31 juil. 2019 ». L'année
+#: doit avoir quatre chiffres : « 204 » n'est pas une année, c'est une coquille.
+_DATE_DE_TITRE_RE = re.compile(
+    r"\bdu\s+(?P<jour>\d{1,2})(?:er)?\s+(?P<mois>[a-zéûè]+)\.?\s+(?P<annee>\d{4})(?!\d)",
+    re.IGNORECASE,
+)
+
+#: Millésime en tête d'un numéro : « 2018-002 ».
+_ANNEE_DU_NUMERO_RE = re.compile(r"^\s*(?P<annee>(?:18|19|20)\d{2})\D")
+
+
+def date_dans_un_titre(titre: Optional[str], numero: Optional[str] = None) -> Optional[str]:
+    """La date annoncée par un titre de fiche, au format ISO, ou ``None``.
+
+    Le ``numero`` de la fiche sert de garde-fou : un texte numéroté « 2018-… »
+    daté de 2016 par le portail est une fiche incohérente avec elle-même, et
+    on ne choisit pas entre ses deux moitiés. Un écart d'un an reste admis :
+    un texte adopté fin décembre est souvent numéroté de l'année suivante.
+    """
+    from datetime import date as _date
+
+    if not titre:
+        return None
+    m = _DATE_DE_TITRE_RE.search(titre)
+    if not m:
+        return None
+    mois = _MOIS.get(m.group("mois").lower().rstrip("."))
+    if mois is None:
+        return None
+    try:
+        jour = _date(int(m.group("annee")), mois, int(m.group("jour")))
+    except ValueError:
+        return None
+    if not 1800 <= jour.year <= 2100:
+        return None
+    if numero:
+        a = _ANNEE_DU_NUMERO_RE.match(numero)
+        if a and abs(int(a.group("annee")) - jour.year) > 1:
+            return None
+    return jour.isoformat()
 
 
 def normalize_hash(value: str) -> str:
@@ -178,6 +244,19 @@ class CrawlRecord:
         if self.source_id and "." in self.source_id:
             return CATEGORY_TO_TYPE.get(self.source_id.rsplit(".", 1)[-1].lower())
         return None
+
+    @property
+    def act_date(self) -> Optional[str]:
+        """Date de l'acte lue dans le **titre** de la fiche, ou ``None``.
+
+        « Arrêté N° 2018-002 du 25 avril 2018 » → ``"2018-04-25"``. Le portail
+        abrège les mois (« 31 juil. 2019 ») et ampute parfois le millésime
+        (« 20 févr. 204 ») : une année qui n'a pas quatre chiffres, une date qui
+        n'existe pas au calendrier, ou une année qui contredit le numéro de la
+        fiche de plus d'un an ne donnent rien. Mieux vaut pas de témoin qu'un
+        faux témoin.
+        """
+        return date_dans_un_titre(self.title, self.number)
 
     def evidence_for(self, champ: str) -> str:
         """D'où vient ce champ, en une ligne consignable."""
@@ -458,6 +537,7 @@ def reconcile(
     ecarts.extend(_reconcilier_type(metadata, record))
     ecarts.extend(_reconcilier_titre(metadata, record))
     ecarts.extend(_verifier_coherence_des_dates(metadata, record))
+    ecarts.extend(_confronter_la_date_du_titre(metadata, record))
 
     return ecarts
 
@@ -486,7 +566,11 @@ def _reconcilier_valeur(
             ),
         )]
 
-    if _equivalents(valeur_document, valeur_catalogue):
+    accord = (
+        same_official_number(valeur_document, valeur_catalogue) if champ == "number"
+        else _equivalents(valeur_document, valeur_catalogue)
+    )
+    if accord:
         metadata.confidence[champ] = max(
             metadata.confidence.get(champ, 0.0), AGREEMENT_CONFIDENCE
         )
@@ -579,7 +663,16 @@ def _reconcilier_titre(
     et se trompe — « Loi N° 2024-09 du 20 févr. 204 » est une fiche réelle du
     SGG. Comparer deux formulations libres produirait un bruit constant sans
     rien apprendre.
+
+    Il est en revanche **conservé** dans les preuves, avec la description de la
+    fiche : là où l'OCR a rendu « ARRÈTÉ N" 2018. OO2 /PR/ … oo2 », la fiche
+    donne « fixant les modalités de gestion des stocks à la Présidence de la
+    République ». La relecture et l'affichage en ont besoin ; le champ
+    ``title``, lui, reste le miroir du document.
     """
+    intitule = " ".join(v.strip() for v in (record.title, record.description) if v and v.strip())
+    if intitule:
+        metadata.evidence["titre_catalogue"] = intitule
     if not record.title or metadata.title:
         return []
     metadata.title = record.title
@@ -613,6 +706,57 @@ def _verifier_coherence_des_dates(
             f"date incohérente : le document est daté du {metadata.date}, "
             f"postérieur à sa mise en ligne le {record.published_at}. "
             "L'une des deux lectures est fausse."
+        ),
+    )]
+
+
+def _confronter_la_date_du_titre(
+    metadata: DocumentMetadata, record: CrawlRecord
+) -> list[Discrepancy]:
+    """La date que le titre de la fiche attribue à l'acte : un témoin.
+
+    Elle confirme, ou elle est proposée — jamais recopiée. Voir l'en-tête du
+    module : le portail se trompe aussi, et le champ ``date`` doit rester ce
+    que le document dit.
+    """
+    temoin = record.act_date
+    if not temoin:
+        return []
+
+    if metadata.date == temoin:
+        metadata.confidence["date"] = max(
+            metadata.confidence.get("date", 0.0), AGREEMENT_CONFIDENCE
+        )
+        ancienne = metadata.evidence.get("date", "")
+        trace = f"confirmé par le titre de la fiche ({record.evidence_for('titre')})"
+        metadata.evidence["date"] = f"{ancienne} | {trace}" if ancienne else trace
+        return [Discrepancy(
+            field="date", from_document=metadata.date, from_catalogue=temoin,
+            action="confirme", severity="info",
+            message=f"date confirmée par le titre de la fiche : {temoin}",
+        )]
+
+    if not metadata.date:
+        return [Discrepancy(
+            field="date", from_document=None, from_catalogue=temoin,
+            action="propose", severity="info",
+            message=(
+                f"date absente du document ; le titre de la fiche annonce "
+                f"{temoin} ({record.title!r}). Proposition à valider — la date "
+                "n'est pas recopiée."
+            ),
+        )]
+
+    metadata.warnings.append(
+        f"date : le document lit {metadata.date}, le titre de la fiche annonce {temoin}"
+    )
+    return [Discrepancy(
+        field="date", from_document=metadata.date, from_catalogue=temoin,
+        action="diverge", severity="warning",
+        message=(
+            f"date : le document lit {metadata.date}, le titre de la fiche "
+            f"annonce {temoin} ({record.title!r}). La lecture du document est "
+            "conservée ; la date de la fiche est proposée."
         ),
     )]
 

@@ -325,7 +325,30 @@ def check_metadata(document: Document) -> tuple[float, list[QualityIssue]]:
         )
 
     issues.extend(_check_number_date_consistency(document.metadata))
+    issues.extend(_catalogue_issues(document.metadata))
     return completeness, issues
+
+
+def _catalogue_issues(metadata) -> list[QualityIssue]:
+    """Les écarts avec la fiche du catalogue, en anomalies relisibles.
+
+    Une divergence (« le document lit 2016-03-20, la fiche annonce
+    2018-04-25 ») est un avertissement : l'une des deux valeurs est fausse.
+    Une proposition (le document ne donne rien, la fiche propose) est une
+    information : rien n'a été recopié, quelqu'un peut la retenir.
+    """
+    issues: list[QualityIssue] = []
+    for ecart in metadata.divergences or []:
+        action = ecart.get("action")
+        champ = ecart.get("field") or "?"
+        if action == "diverge":
+            code, severity = f"diverge_du_catalogue_{champ}", ecart.get("severity") or "warning"
+        elif action == "propose":
+            code, severity = f"propose_par_le_catalogue_{champ}", "info"
+        else:
+            continue
+        issues.append(QualityIssue(code=code, severity=severity, message=ecart.get("message") or ""))
+    return issues
 
 
 #: Numéro officiel dont la première partie est un millésime : « 2025-18 ».

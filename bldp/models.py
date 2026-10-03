@@ -370,6 +370,11 @@ class DocumentMetadata(JsonMixin):
     confidence: dict[str, float] = field(default_factory=dict)
     evidence: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
+    #: Écarts avec le catalogue de collecte (``divergence`` et ``proposition``),
+    #: tels que :func:`bldp.core.crawl.reconcile` les a constatés — les deux
+    #: versions, le message, la gravité. Conservés pour la relecture : un écart
+    #: qui ne vit que dans le journal d'exécution est un écart perdu.
+    divergences: list[dict] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------

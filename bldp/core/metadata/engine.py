@@ -844,7 +844,7 @@ def apply_manual_metadata(
             except ValueError:
                 metadata.warnings.append(f"statut juridique inconnu ignoré : {value!r}")
                 continue
-        elif key in {"confidence", "evidence", "warnings"}:
+        elif key in {"confidence", "evidence", "warnings", "divergences"}:
             continue
         setattr(metadata, key, value)
         metadata.confidence[key] = 1.0
