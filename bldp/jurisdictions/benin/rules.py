@@ -225,68 +225,196 @@ OFFICIAL_SOURCES = {
     "COUR_CONST": "Cour constitutionnelle du Bénin",
 }
 
-#: Statut juridique déclaré dans le texte lui-même.
-STATUS_PATTERNS: dict[str, list[re.Pattern[str]]] = {
-    "abroge": [
-        re.compile(r"\best\s+abrog[ée]e?\b", _FLAGS),
-        re.compile(r"\bsont\s+abrog[ée]e?s\b", _FLAGS),
-    ],
-    "modifie": [
-        re.compile(r"\best\s+modifi[ée]e?\b", _FLAGS),
-        re.compile(r"\bmodifiant\s+(?:et\s+compl[ée]tant\s+)?la\s+loi\b", _FLAGS),
-    ],
-    "remplace": [re.compile(r"\bremplac[ée]e?\s+par\b", _FLAGS)],
-}
+#: Statut juridique déclaré dans le texte lui-même : **aucun motif**.
+#:
+#: Ce dictionnaire était rempli, et c'était une erreur de raisonnement. Il
+#: cherchait « est abrogé », « sont abrogées », « remplacé par » dans le texte
+#: d'un document et en concluait que **ce document** était abrogé. Or ces
+#: formules disent presque toujours l'inverse, ou tout autre chose :
+#:
+#:   « Le présent décret **qui abroge** toutes dispositions antérieures »
+#:        → ce décret abroge ; il n'est pas abrogé. Clause de style présente
+#:          dans 881 documents sur 4 000 sondés.
+#:   « il peut être **remplacé par** un agent de son choix »
+#:        → il s'agit d'un fonctionnaire, pas du décret.
+#:   « le tableau de l'article 6 du décret 10/PCM/MF est **remplacé par**… »
+#:        → c'est ce texte-ci qui remplace, dans un *autre* texte.
+#:
+#: Mesuré sur le corpus : 1 119 documents portaient un statut posé ainsi, à une
+#: confiance de 0,50. C'est le mécanisme du bug des numéros — un motif trouvé
+#: dans le texte, attribué au document qui le contient au lieu du document
+#: qu'il vise.
+#:
+#: Le statut d'un texte se déduit des relations **entrantes** : c'est à cela
+#: que sert ``STATUS_FROM_INCOMING`` dans ``bldp.core.relations``. Un document
+#: ne peut pas savoir qu'il sera un jour abrogé ; seul le texte abrogeant le
+#: sait, et c'est lui qui le dit. Laisser ce dictionnaire vide n'est donc pas
+#: une capacité perdue, c'est la suppression d'une source d'affirmations
+#: fausses — et « un texte sans signal reste inconnu » (§13).
+STATUS_PATTERNS: dict[str, list[re.Pattern[str]]] = {}
+
+
+# ---------------------------------------------------------------------------
+# Relations entre textes : le fragment de référence, partagé
+# ---------------------------------------------------------------------------
+
+#: Les types de texte que le corpus contient **réellement**. S'en tenir à
+#: « loi » et « décret », comme le faisaient les motifs d'origine, laissait de
+#: côté 1 395 ordonnances, 580 codes, 445 décisions et 56 constitutions.
+_TYPE_CITE = (
+    r"(?:lois?|d[ée]crets?|ordonnances?|arr[êe]t[ée]s?|codes?|constitutions?"
+    r"|d[ée]cisions?|accords?|conventions?)"
+)
+
+#: Une référence citée : un type de texte, puis un numéro.
+#:
+#: ``NUMERO_PREFIX`` est le « n° » tolérant à l'OCR écrit pour la réparation
+#: des numéros. Il n'avait jamais été appliqué ici, et c'est **la** raison du
+#: silence : les motifs d'origine exigeaient le caractère ``°`` littéral, quand
+#: le corpus porte « décret n" 98-625 », « loi n' 86-014 », « BCRET ne 240 ».
+#: Sur 4 000 documents sondés, les motifs stricts trouvaient 7 relations à
+#: conséquence juridique ; en levant cette seule contrainte et les deux
+#: suivantes, on en trouve 461.
+#:
+#: Le numéro est **obligatoire**, et c'est lui qui protège de la clause de
+#: style : « abroge toutes dispositions antérieures contraires » ne nomme aucun
+#: texte, ne porte aucun numéro, et ne produit donc aucune relation.
+#: Remplissage « tempéré » : chaque caractère avalé doit ne PAS ouvrir un
+#: nouveau nom de texte, et ne jamais franchir une fin de ligne.
+#:
+#: Sans cette précaution, un remplissage bête enjambe une citation entière.
+#: Relevé sur decret_1963_118 :
+#:
+#:     texte    « VU la Constitution du Dahomeyl ⏎ VU la loi n° 59-2l »
+#:     capturé  « la Constitution du Dahomeyl VU la loi n° 59-2l »
+#:     produit  « constitution n° 59-002 »
+#:
+#: Le **type** d'une citation collé au **numéro** de la suivante : une
+#: référence qui n'existe pas, et qui aurait été résolue vers un vrai document.
+#: Un faux de cette nature est plus grave qu'un oubli.
+def _liaison(budget: int) -> str:
+    return rf"(?:(?!{_TYPE_CITE})[^.;\n]){{0,{budget}}}?"
+
+
+_CIBLE = (
+    r"(?:(?:la|le|les|l['’])\s*)?" + _TYPE_CITE +
+    r"(?:\s+organique|\s+constitutionnelle|\s+de\s+finances)?"
+    + _liaison(20) + NUMERO_PREFIX +
+    rf"{OCR_DIGIT}{{1,4}}\s*[{re.escape(DASHES)}_/]\s*{OCR_DIGIT}{{1,4}}"
+    r"(?:\s*/\s*[A-Z][\w./\-]{0,24})?"
+)
+
+
+#: Le complément d'agent : « … par la loi n° 2019-40 ».
+#:
+#: C'est le piège de l'inversion, et il a failli passer. « X **modifiée par**
+#: la loi n° 2019-40 » ne dit pas que le document modifie la loi 2019-40 : il
+#: dit que la loi 2019-40 modifie X. Enregistrer la relation dans ce sens la
+#: retourne — c'est précisément l'erreur, en sens inverse, qui avait fait
+#: marquer « abrogé » 476 documents qui abrogeaient.
+#:
+#: Et le lien correct n'est pas représentable ici : dans « Vu la loi n° 98-004,
+#: modifiée par la loi n° 2019-40 », ni l'une ni l'autre n'est le document
+#: courant, alors que ``source_document_id`` est toujours ce document. Face à
+#: un lien qu'on ne peut pas écrire juste, on n'écrit rien.
+_AGENT = (r"\s+par\s+(?:(?:la|le|les|l['’])\s*)?" + _TYPE_CITE)
+
+
+def _cite_apres(verbe: str, sauf: str = "") -> re.Pattern[str]:
+    """« abroge le décret n° X » — la cible **suit** le verbe, et le subit.
+
+    C'est la seule construction que voyaient les motifs d'origine. ``verbe`` est
+    donné en racine (« abrog »), de sorte que « abroge », « abrogeant » et le
+    substantif « abrogation » — « portant abrogation du décret n° X », très
+    fréquent dans les intitulés — soient couverts d'un seul motif.
+
+    Le complément d'agent est exclu : après « abrogé **par** », ce qui suit est
+    l'auteur de l'abrogation, pas sa victime.
+    """
+    # Les gardes sont placés AVANT « \w* », jamais après : sinon le moteur
+    # recule d'un caractère (« abrog|é par » au lieu de « abrogé| par »), la
+    # négation devient vraie et l'exclusion ne sert plus à rien. Un test le
+    # vérifie sur « le décret n° 58-2 est abrogé par la loi n° 90-032 ».
+    interdits = [rf"(?!\w*{_AGENT})"]
+    if sauf:
+        interdits.append(rf"(?!\w*\s+{sauf})")
+    return re.compile(
+        r"\b" + verbe + "".join(interdits) +
+        r"\w*\s+(?:" + _liaison(40) + r"\s)?(?P<target>" + _CIBLE + r")",
+        _FLAGS,
+    )
+
+
+def _cite_avant(verbe: str) -> re.Pattern[str]:
+    """« le décret n° X **est abrogé** » — la cible **précède** le verbe.
+
+    Deuxième restriction levée : un motif qui ne regarde qu'à droite du verbe
+    ne voit jamais la tournure passive, pourtant la plus courante dans les
+    articles d'abrogation béninois (« Sont et demeurent abrogées les
+    dispositions du Décret n° 89-151 »).
+
+    Le sens de la relation ne change pas — *tant qu'aucun agent n'est nommé*.
+    « L'article 6 du décret n° X est remplacé par le suivant » : c'est bien le
+    document courant qui remplace. Mais « le décret n° X est remplacé par la
+    loi n° Y » désigne Y comme auteur, et la relation ne concerne alors plus le
+    document courant du tout : elle est écartée.
+    """
+    return re.compile(
+        r"(?P<target>" + _CIBLE + r")" + _liaison(60) + r"\b"
+        r"(?:est|sont|demeure|demeurent)\s+(?:et\s+\w+\s+)?" + verbe +
+        rf"(?!\w*{_AGENT})\w*",   # garde avant « \w* » — cf. _cite_apres
+        _FLAGS,
+    )
 
 #: Relations entre textes (§13). Le groupe ``target`` capture la référence citée.
+#:
+#: Chaque relation à conséquence juridique est cherchée dans les **deux sens** :
+#: la cible après le verbe (« abroge le décret n° X ») et avant lui
+#: (« le décret n° X est abrogé »). ``needs_review`` reste vrai dans tous les
+#: cas : élargir la détection augmente aussi les faux positifs, et c'est le
+#: prix symétrique de la restriction qu'on lève. Ce que ces motifs produisent
+#: est une **piste à vérifier**, jamais une affirmation.
 RELATION_PATTERNS: dict[str, list[re.Pattern[str]]] = {
+    # « partiellement » est exclu ici pour ne pas produire deux relations
+    # concurrentes sur la même phrase : la portée partielle a son propre type.
     "abroge": [
-        re.compile(
-            r"\babroge(?:nt)?\s+(?:les?\s+dispositions\s+de\s+)?"
-            r"(?P<target>(?:la\s+)?loi\s+n\s*[°ºo]\s*[\d\s\-–/]+"
-            r"|(?:le\s+)?d[ée]cret\s+n\s*[°ºo]\s*[\d\s\-–/]+)",
-            _FLAGS,
-        ),
+        _cite_apres("abrog", sauf="partiellement"),
+        _cite_avant("abrog"),
     ],
     "abroge_partiellement": [
         re.compile(
             r"\babroge(?:nt)?\s+partiellement\s+(?P<target>[^.;]{5,120})", _FLAGS
         ),
         re.compile(
-            r"\bl['’]?article\s+\d+\s+de\s+(?P<target>(?:la\s+)?loi\s+n\s*[°ºo]\s*[\d\s\-–/]+)"
-            r"\s+est\s+abrog[ée]",
+            r"\bl['’]?article\s+\d+\s+de\s+(?P<target>" + _CIBLE + r")"
+            r"[^.;]{0,40}?\s+est\s+abrog[ée]",
             _FLAGS,
         ),
     ],
     "modifie": [
-        re.compile(
-            r"\bmodifi(?:e|ant|ent)\s+(?:et\s+compl[ée]t\w+\s+)?"
-            r"(?P<target>(?:la\s+)?loi\s+n\s*[°ºo]\s*[\d\s\-–/]+"
-            r"|(?:le\s+)?d[ée]cret\s+n\s*[°ºo]\s*[\d\s\-–/]+"
-            r"|(?:le\s+)?code\s+\w+(?:\s+\w+){0,3})",
-            _FLAGS,
-        ),
+        _cite_apres("modifi"),
+        _cite_avant("modifi"),
     ],
     "remplace": [
-        re.compile(
-            r"\bremplace(?:nt)?\s+(?P<target>(?:la\s+)?loi\s+n\s*[°ºo]\s*[\d\s\-–/]+"
-            r"|(?:le\s+)?d[ée]cret\s+n\s*[°ºo]\s*[\d\s\-–/]+)",
-            _FLAGS,
-        ),
+        _cite_apres("remplac"),
+        _cite_avant("remplac"),
+    ],
+    "complete": [
+        _cite_apres("compl[ée]t"),
     ],
     "applique": [
         re.compile(
-            r"\b(?:pour\s+l['’]application\s+de|en\s+application\s+de)\s+"
-            r"(?P<target>(?:la\s+)?loi\s+n\s*[°ºo]\s*[\d\s\-–/]+)",
+            r"\b(?:pour\s+l['’]application\s+de|en\s+application\s+de|"
+            r"pris\s+en\s+application\s+de)\s+(?:[^.;]{0,30}?\s)?"
+            r"(?P<target>" + _CIBLE + r")",
             _FLAGS,
         ),
     ],
+    # « Vu … » : le préambule, la forme la plus régulière et la plus sûre.
+    # Elle portait déjà 22 946 des 23 099 relations ; elle est ici étendue aux
+    # mêmes types de texte et au même « n° » tolérant que le reste.
     "cite": [
-        re.compile(
-            r"\bvu\s+(?P<target>(?:la\s+)?loi\s+n\s*[°ºo]\s*[\d\s\-–/]+"
-            r"|(?:le\s+)?d[ée]cret\s+n\s*[°ºo]\s*[\d\s\-–/]+)",
-            _FLAGS,
-        ),
+        re.compile(r"\bvu\s+(?P<target>" + _CIBLE + r")", _FLAGS),
     ],
 }
 
