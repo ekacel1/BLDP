@@ -507,6 +507,10 @@ def resolve_relations(
     for document in documents:
         for relation in document.relations:
             report.relations_found += 1
+            # Une résolution se refait en entier. Sans cela, une seconde passe
+            # qui ne trouve plus de cible — numéro devenu ambigu, document
+            # désindexé — laisserait en place la cible fausse de la première.
+            relation.target_document_id = None
             normalized = normalize_reference(relation.target_reference)
 
             if normalized is None:

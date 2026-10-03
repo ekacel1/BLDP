@@ -393,6 +393,17 @@ class TestAucunPremierVenu:
         visa = next(r for r in citant.relations if "2016-292" in r.target_reference)
         assert visa.target_document_id == "decret_2016_292"
 
+    def test_une_seconde_passe_retire_une_cible_devenue_douteuse(self, config):
+        """La cible fausse d'une première résolution ne survit pas à la seconde."""
+        a = document("decret_2016_292", number="2016-292")
+        b = document("decret_2016_711", number="2016-292")
+        citant = document("decret_2020_001", VISA_2016_292, number="2020-001")
+        citant.relations = detect_relations(citant, config)
+        visa = next(r for r in citant.relations if "2016-292" in r.target_reference)
+        visa.target_document_id = "decret_2016_711"          # héritée d'une passe antérieure
+        resolve_relations([a, b, citant], config)
+        assert visa.target_document_id is None
+
     def test_le_mieux_atteste_l_emporte_sur_un_texte_sans_parente(self):
         """Cas réel : « decret_1989_20 », sans adresse, lu comme loi 89-20."""
         faible = document("decret_1989_20", doc_type=DocumentType.LOI, number="89-20")
