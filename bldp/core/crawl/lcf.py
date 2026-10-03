@@ -48,7 +48,7 @@ import re
 import sqlite3
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterator, Optional
+from typing import Iterator, Optional, Sequence
 
 from bldp.logging_setup import get_logger
 from bldp.models import DocumentMetadata, DocumentType
@@ -492,9 +492,16 @@ class Discrepancy:
     field: str
     from_document: Optional[str]
     from_catalogue: Optional[str]
-    action: str          # « comble » | « confirme » | « diverge »
+    action: str          # « comble » | « confirme » | « diverge » | « propose »
     message: str
     severity: str = "warning"
+    #: Troisième témoin : l'extrait du document où l'on a retrouvé la valeur
+    #: du catalogue (titre de l'acte, formule de signature), ou ``None``.
+    found_in_document: Optional[str] = None
+    #: Même recherche pour la valeur retenue par le document.
+    document_value_found: Optional[str] = None
+    #: Le troisième témoin a-t-il été consulté ?
+    checked: bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -504,7 +511,28 @@ class Discrepancy:
             "action": self.action,
             "message": self.message,
             "severity": self.severity,
+            "found_in_document": self.found_in_document,
+            "document_value_found": self.document_value_found,
+            "verdict": self.verdict,
         }
+
+    @property
+    def verdict(self) -> Optional[str]:
+        """Ce que dit le troisième témoin, quand on l'a consulté (sinon ``None``).
+
+        ``fiche_retrouvee`` : la valeur du catalogue est écrite dans le titre de
+        l'acte ou sa signature, celle du document non — candidate sérieuse à
+        la correction. ``document_retrouve`` : l'inverse — le portail se
+        trompe, ou sert un autre fichier que celui qu'il décrit.
+        ``les_deux`` et ``aucun`` : rien ne départage.
+        """
+        if not self.checked:
+            return None
+        if self.found_in_document is None and self.document_value_found is None:
+            return "aucun"
+        if self.found_in_document and self.document_value_found:
+            return "les_deux"
+        return "fiche_retrouvee" if self.found_in_document else "document_retrouve"
 
 
 def reconcile(
@@ -759,6 +787,195 @@ def _confronter_la_date_du_titre(
             "conservée ; la date de la fiche est proposée."
         ),
     )]
+
+
+# ---------------------------------------------------------------------------
+# Troisième témoin : la date écrite dans le document lui-même
+# ---------------------------------------------------------------------------
+#
+# Quand le document et la fiche donnent deux dates, l'un des deux se trompe.
+# Le texte de l'acte départage souvent : son titre porte « DÉCRET N° 2017-499
+# du 18 octobre 2017 », sa signature « Fait à Cotonou, le 18 octobre 2017 ».
+# Mais l'OCR abîme précisément ces lignes — c'est pour cela que l'extraction
+# s'est rabattue sur la date d'un visa. Les graphies réelles relevées sur le
+# corpus : « 3I DECEMBRE 20{4 », « 17 eott 'l 979 », « 26 5entenbre 1977 »,
+# « 1B AVRrL 2018 », « {3 AOUT 2(J12 », « du20 Novembre 1998 ».
+#
+# La recherche est donc tolérante, mais seulement là où il le faut : on cherche
+# UNE date connue (pas n'importe quelle date), dans DEUX zones précises — le
+# bloc de titre avant le premier « Vu », et la formule de signature. Les visas
+# sont exclus : ils citent les dates d'autres textes, et c'est d'eux que vient
+# l'erreur qu'on cherche à corriger.
+
+#: Confusions OCR d'un chiffre, dans un jeton qu'on attend numérique.
+_OCR_CHIFFRES = str.maketrans({
+    "O": "0", "o": "0", "Q": "0", "D": "0",
+    "I": "1", "l": "1", "|": "1", "i": "1", "!": "1", "{": "1", "}": "1", "t": "1",
+    "B": "8", "S": "5", "s": "5", "Z": "2", "z": "2",
+})
+
+#: Confusions OCR d'une lettre, dans un jeton qu'on attend alphabétique.
+_OCR_LETTRES = str.maketrans({"5": "s", "0": "o", "1": "l", "4": "a"})
+
+_MOIS_ECRITS = {
+    1: ("janvier", "janv"), 2: ("fevrier", "fevr"), 3: ("mars",), 4: ("avril", "avr"),
+    5: ("mai",), 6: ("juin",), 7: ("juillet", "juil"), 8: ("aout",),
+    9: ("septembre", "sept"), 10: ("octobre", "oct"), 11: ("novembre", "nov"),
+    12: ("decembre", "dec"),
+}
+
+#: Fin du bloc de titre : le premier visa (décrets, ordonnances), ou la formule
+#: d'adoption d'une loi — « L'Assemblée nationale a délibéré et adopté en sa
+#: séance du 23 novembre 2022 » donne la date du vote, pas celle de la loi.
+#: ``\w`` et non ``[a-z]`` autour de « vu » : « prévu » ne doit pas clore le bloc.
+_PREMIER_VU_RE = re.compile(r"(?<!\w)vu(?!\w)|d[ée]lib[ée]r[ée]", re.IGNORECASE)
+_SIGNATURE_RE = re.compile(r"fait\s+[aà]\s+[^\s,]{3,20}\s*,?\s*le\s+(.{6,40})", re.IGNORECASE)
+
+
+def _sans_accents(texte: str) -> str:
+    import unicodedata
+
+    return "".join(c for c in unicodedata.normalize("NFKD", texte) if not unicodedata.combining(c))
+
+
+def _distance(a: str, b: str) -> int:
+    """Distance d'édition (Levenshtein), pour des mots courts."""
+    precedente = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        courante = [i]
+        for j, cb in enumerate(b, 1):
+            courante.append(min(precedente[j] + 1, courante[j - 1] + 1, precedente[j - 1] + (ca != cb)))
+        precedente = courante
+    return precedente[-1]
+
+
+def _est_le_mois(jeton: str, mois: int) -> bool:
+    """Le jeton désigne-t-il ce mois, et aucun autre ?
+
+    Tolérance d'une ou deux lettres selon la longueur — « ocrobre »,
+    « 5entenbre », « AVRrL » —, mais le jeton doit être **strictement** plus
+    proche du mois attendu que de tout autre : « juil. » n'est pas « juin »,
+    et « eott », à égale distance de « aout » et de « oct », ne prouve rien.
+    """
+    mot = _sans_accents(jeton).lower().translate(_OCR_LETTRES).strip(".,;:'\"")
+    if not mot or not mot.isalpha():
+        return False
+
+    def proximite(m: int) -> int:
+        return min(_distance(mot, forme) for forme in _MOIS_ECRITS[m])
+
+    attendu = proximite(mois)
+    # Plus le mot est court, moins on lui pardonne : « mai » doit être exact.
+    tolerance = 0 if len(mot) <= 3 else (1 if len(mot) <= 4 else 2)
+    if attendu > tolerance:
+        return False
+    return all(attendu < proximite(m) for m in _MOIS_ECRITS if m != mois)
+
+
+def _est_le_jour(jeton: str, jour: int) -> bool:
+    brut = re.sub(r"^(?:du|le|au)", "", jeton.strip(".,;:'\""), flags=re.IGNORECASE)
+    if jour == 1 and brut.lower() in ("1er", "ler", "ier", "1°"):
+        return True
+    chiffres = brut.translate(_OCR_CHIFFRES)
+    return chiffres.isdigit() and int(chiffres) == jour and len(chiffres) <= 2
+
+
+def _annee_possible(annee: int) -> bool:
+    from datetime import date as _date
+
+    return 1800 <= annee <= _date.today().year + 1
+
+
+def _annee_compatible(jetons: list[str], annee: int) -> bool:
+    """L'année qui suit le mois : la bonne, ou illisible — jamais une autre.
+
+    « 2OI3 » est 2013 ; « 2(J12 » ou « 179 » sont illisibles et ne contredisent
+    rien ; « 1976 » propre, quand on attend 1977, contredit.
+    """
+    if not jetons:
+        return True
+    lu = jetons[0].strip(".,;:'\"")
+    corrige = lu.translate(_OCR_CHIFFRES)
+    if corrige == str(annee):
+        return True
+    if re.fullmatch(r"\d{4}", lu) and lu != str(annee) and _annee_possible(int(lu)):
+        # « 2072 » pour 2012 : une année impossible est une erreur de lecture,
+        # pas une contradiction.
+        return False
+    if len(jetons) > 1 and re.fullmatch(r"\D{0,2}", lu):
+        # « 'l 979 » : le millésime coupé en deux jetons.
+        recolle = (lu + jetons[1]).strip(".,;:'\"").translate(_OCR_CHIFFRES)
+        if re.fullmatch(r"\d{4}", recolle):
+            return recolle == str(annee)
+    return True
+
+
+#: Début de l'objet de l'acte. La date de l'acte se place entre son numéro et
+#: son objet ; ce qui suit l'objet cite d'autres textes : « ORDONNANCE n° 74-42
+#: du 17 mai 1974 modifiant l'ordonnance … du 26 octobre 1972 ».
+_OBJET_RE = re.compile(
+    r"(?<!\w)(?:port[aâ]nt|relati(?:f|ve|vement)|fixant|modifiant|compl[ée]tant|autorisant"
+    r"|cr[ée]ant|approuvant|accordant|abrogeant|instituant|nommant|ratifiant|promulguant"
+    r"|d[ée]clarant|organisant|d[ée]finissant|r[ée]glementant)(?!\w)",
+    re.IGNORECASE,
+)
+
+
+def _zones_de_date(pages: Sequence[str]) -> list[str]:
+    """Le titre de l'acte (avant son objet et le premier « Vu ») et sa signature."""
+    zones: list[str] = []
+    debut = " ".join((pages[0] if pages else "").split())
+    fins = [m.start() for m in (_PREMIER_VU_RE.search(debut, 20), _OBJET_RE.search(debut, 20)) if m]
+    zones.append(debut[: min(min(fins) if fins else 600, 1200)])
+    fin = " ".join(" ".join(pages[-2:]).split()) if pages else ""
+    zones.extend(m.group(1) for m in _SIGNATURE_RE.finditer(fin))
+    return zones
+
+
+def date_retrouvee_dans_le_document(pages: Sequence[str], date_iso: Optional[str]) -> Optional[str]:
+    """L'extrait du document où figure ``date_iso``, ou ``None``.
+
+    Seulement dans le bloc de titre et la formule de signature, voir l'en-tête
+    de cette section. Un jour suivi du mois attendu, puis une année qui ne
+    contredit pas : l'extrait trouvé est renvoyé, pour que le relecteur le voie.
+    """
+    if not date_iso:
+        return None
+    try:
+        annee, mois, jour = (int(x) for x in date_iso.split("-"))
+    except ValueError:
+        return None
+    for zone in _zones_de_date(pages):
+        jetons = re.findall(r"[^\s]+", zone)
+        for i in range(len(jetons) - 1):
+            if i and re.fullmatch(r"\d", jetons[i - 1].strip(".,;:'\"")):
+                continue      # « DU 1 1 AVRIL » : le 11 coupé en deux, pas le 1er
+            if _est_le_jour(jetons[i], jour) and _est_le_mois(jetons[i + 1], mois) \
+                    and _annee_compatible(jetons[i + 2:i + 4], annee):
+                return " ".join(jetons[max(0, i - 1):i + 3])
+    return None
+
+
+def corroborer_par_le_document(ecarts: list[Discrepancy], pages: Sequence[str]) -> None:
+    """Consulte le troisième témoin pour chaque écart de date.
+
+    Modifie les écarts en place : l'extrait trouvé, de part et d'autre, et le
+    message complété. Ne touche à aucune métadonnée — le verdict oriente la
+    relecture, il ne décide de rien.
+    """
+    for ecart in ecarts:
+        if ecart.field != "date" or ecart.action not in ("diverge", "propose"):
+            continue
+        ecart.checked = True
+        ecart.found_in_document = date_retrouvee_dans_le_document(pages, ecart.from_catalogue)
+        # Une date impossible (« 2072-03-19 ») n'est témoin de rien : on ne la cherche pas.
+        annee_lue = (ecart.from_document or "")[:4]
+        if annee_lue.isdigit() and _annee_possible(int(annee_lue)):
+            ecart.document_value_found = date_retrouvee_dans_le_document(pages, ecart.from_document)
+        if ecart.found_in_document:
+            ecart.message += f" Le document lui-même porte la date de la fiche : « {ecart.found_in_document} »."
+        if ecart.document_value_found:
+            ecart.message += f" Il porte aussi la date retenue : « {ecart.document_value_found} »."
 
 
 #: Préfixe « n° », « no », « N º »… à retirer avant de comparer deux numéros.

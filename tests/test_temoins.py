@@ -464,3 +464,121 @@ class TestLesEcartsDeviennentDesAnomalies:
             base.save_document(d)
             relu = load_document(base, d.document_id)
         assert relu.metadata.divergences == [ECART_DATE]
+
+
+# ---------------------------------------------------------------------------
+# Troisième témoin : la date écrite dans le document lui-même
+# ---------------------------------------------------------------------------
+
+from bldp.core.crawl.lcf import (  # noqa: E402
+    corroborer_par_le_document,
+    date_retrouvee_dans_le_document,
+)
+
+
+class TestLaDateDansLeDocument:
+    """Les graphies sont celles du corpus réel, telles que l'OCR les a rendues."""
+
+    @pytest.mark.parametrize(
+        "entete, date",
+        [
+            ("DECRET N'2014-774 DU 3I DECEMBRE 20{4 portant modification de I'article 2", "2014-12-31"),
+            ("ORDCKNANCE H°77-36 du 26 5entenbre 1977 relative au paiement", "1977-09-26"),
+            ("DÉcRET N'20lB - i30 DU 1B AVRrL 2018 portânt âttributions", "2018-04-18"),
+            ("DECRET N'2012-243 DU {3 AOUT 2(J12 portant nomination de", "2012-08-13"),
+            ("ORDONNANCE N'98-û7 /PCS-CAB du20 Novembre 1998. Portant Nomination", "1998-11-20"),
+            ("DÉCRETN'2017-499 du 18 ocrobre 2017 portant nomination au Ministère", "2017-10-18"),
+            ("ORDONNANCE N'79-37 du 17 aout 'l 979 portant approbation", "1979-08-17"),
+            ("ORDONNANCE n° 79-56 du 6 Décembre 179 tt | portant ratification", "1979-12-06"),
+            ("DÉCRET N\" 202z - 338 DU 1s JUIN 2022 portant dissolution", "2022-06-15"),
+        ],
+    )
+    def test_la_date_abimee_est_retrouvee(self, entete, date):
+        assert date_retrouvee_dans_le_document([entete + " LE PRÉSIDENT, Vu la loi n° 90-32"], date)
+
+    def test_un_autre_jour_n_est_pas_la_date(self):
+        """loi_2010_31 : la fiche dit 27 septembre, le PDF est la loi du 22 mars."""
+        entete = "LOr N'2lJ10.- 10 DU 22 MARS 2010 modifiant et complétant les dispositions"
+        assert date_retrouvee_dans_le_document([entete], "2010-09-27") is None
+        assert date_retrouvee_dans_le_document([entete], "2010-03-22")
+
+    def test_une_autre_annee_lisible_contredit(self):
+        assert date_retrouvee_dans_le_document(["DÉCRET N° 77-12 du 26 septembre 1976 portant"], "1977-09-26") is None
+
+    def test_juillet_n_est_pas_juin(self):
+        assert date_retrouvee_dans_le_document(["DÉCRET N° 2019-12 du 15 juil. 2019 portant"], "2019-06-15") is None
+
+    def test_un_mot_a_egale_distance_de_deux_mois_ne_prouve_rien(self):
+        """« eott » est aussi proche de « oct » que de « aout »."""
+        assert date_retrouvee_dans_le_document(["ORDONNANCE N'79-37 du 17 eott 1979"], "1979-08-17") is None
+
+    def test_les_visas_sont_exclus(self):
+        """La date d'un texte cité est justement l'erreur qu'on corrige."""
+        page = ("DÉCRET N° 2017-499 portant nomination. LE PRÉSIDENT DE LA RÉPUBLIQUE, "
+                "Vu la loi n° 90-32 du 11 décembre 1990 portant Constitution")
+        assert date_retrouvee_dans_le_document([page], "1990-12-11") is None
+
+    def test_la_date_du_vote_d_une_loi_est_exclue(self):
+        page = ("LOI n° 2022-27 DU 07 DECEMBRE 2022 portant autorisation. L'Assemblée nationale "
+                "a délibéré et adopté en sa séance du 23 novembre 2022 ;")
+        assert date_retrouvee_dans_le_document([page], "2022-12-07")
+        assert date_retrouvee_dans_le_document([page], "2022-11-23") is None
+
+    def test_une_date_citee_dans_l_objet_est_exclue(self):
+        """Cas réel (ordonnance_1974_42) : la date d'un texte modifié, dans l'objet."""
+        page = ("ORDONNANCE N° 74-42 du 17 mai 1974 modifiant l'ordonnance n° 72-38 "
+                "du 26 octobre 1972 portant statut. Vu la proclamation")
+        assert date_retrouvee_dans_le_document([page], "1974-05-17")
+        assert date_retrouvee_dans_le_document([page], "1972-10-26") is None
+
+    def test_un_jour_coupe_en_deux_n_est_pas_le_premier(self):
+        """Cas réel (decret_2018_118) : « DU 1 1 AVRIL » est le 11, pas le 1er."""
+        page = "DÉCRET N° 2018-118 DU 1 1 AVRIL 2018 portant nomination. Vu la loi"
+        assert date_retrouvee_dans_le_document([page], "2018-04-01") is None
+
+    def test_prevu_ne_clot_pas_le_bloc_de_titre(self):
+        page = "ARRÊTÉ N° 2018-002 tel que prévu du 25 avril 2018 fixant. Vu la loi"
+        assert date_retrouvee_dans_le_document([page], "2018-04-25")
+
+    def test_la_formule_de_signature_compte(self):
+        pages = ["ARRÊTÉ N° 2018-002 portant gestion des stocks. Vu la loi n° 90-32",
+                 "Article 4 : Le présent arrêté prend effet. Fait à Cotonou, le 25 avril 2018"]
+        assert "25 avril 2018" in date_retrouvee_dans_le_document(pages, "2018-04-25")
+
+
+class TestLeVerdict:
+    def _ecart(self, document, fiche_date):
+        from bldp.core.crawl.lcf import Discrepancy
+
+        return Discrepancy(field="date", from_document=document, from_catalogue=fiche_date,
+                           action="diverge", message="m")
+
+    def test_fiche_retrouvee(self):
+        e = self._ecart("2016-03-20", "2018-04-25")
+        corroborer_par_le_document([e], ["ARRÊTÉ N° 2018-002 du 25 avril 2018 fixant. Vu la loi"])
+        assert e.verdict == "fiche_retrouvee"
+        assert "25 avril 2018" in e.message
+        assert e.to_dict()["verdict"] == "fiche_retrouvee"
+
+    def test_document_retrouve(self):
+        e = self._ecart("2010-03-22", "2010-09-27")
+        corroborer_par_le_document([e], ["LOr N'2lJ10.- 10 DU 22 MARS 2010 modifiant"])
+        assert e.verdict == "document_retrouve"
+
+    def test_une_annee_impossible_est_une_erreur_de_lecture(self):
+        """Cas réel (decret_2012_022) : « 2072 » pour 2012, retenu tel quel par la base."""
+        e = self._ecart("2072-03-19", "2012-03-19")
+        corroborer_par_le_document([e], ["DÉCRET N° 2012-022 du 19 mars 2072 portant nomination. Vu"])
+        assert e.verdict == "fiche_retrouvee"
+
+    def test_aucun(self):
+        e = self._ecart("2016-03-20", "2018-04-25")
+        corroborer_par_le_document([e], ["ARRÊTÉ illisible. Vu la loi"])
+        assert e.verdict == "aucun"
+
+    def test_un_ecart_non_consulte_n_a_pas_de_verdict(self):
+        from bldp.core.crawl.lcf import Discrepancy
+
+        e = Discrepancy(field="number", from_document="1", from_catalogue="2", action="diverge", message="m")
+        corroborer_par_le_document([e], ["texte"])
+        assert e.verdict is None

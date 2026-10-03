@@ -424,6 +424,12 @@ def _confronter_au_catalogue(
         return
 
     ecarts = reconcile(document.metadata, fiche)
+    # Troisième témoin : la date de la fiche est-elle écrite dans le titre de
+    # l'acte ou sa signature ? Oriente la relecture, ne décide de rien.
+    from bldp.core.crawl.lcf import corroborer_par_le_document
+
+    pages = getattr(document, "pages", None) or []      # sans texte, pas de troisième témoin
+    corroborer_par_le_document(ecarts, [page.text or "" for page in pages])
     # Divergences et propositions sont conservées avec le document : le
     # contrôle qualité en fait des anomalies, la relecture les retrouve.
     document.metadata.divergences = [
