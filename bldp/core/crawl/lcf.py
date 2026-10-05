@@ -829,7 +829,17 @@ _MOIS_ECRITS = {
 #: séance du 23 novembre 2022 » donne la date du vote, pas celle de la loi.
 #: ``\w`` et non ``[a-z]`` autour de « vu » : « prévu » ne doit pas clore le bloc.
 _PREMIER_VU_RE = re.compile(r"(?<!\w)vu(?!\w)|d[ée]lib[ée]r[ée]", re.IGNORECASE)
-_SIGNATURE_RE = re.compile(r"fait\s+[aà]\s+[^\s,]{3,20}\s*,?\s*le\s+(.{6,40})", re.IGNORECASE)
+#: « Fait à Cotonou, le … », ou la forme courte « Cotonou, le … » des actes de
+#: la Cour suprême (ordonnance 93-04/PCS-CAB, essai du 5 octobre 2026).
+_SIGNATURE_RE = re.compile(
+    r"(?:fait\s+[aà]\s+[^\s,]{3,20}|cotonou|porto[\s-]*novo|abomey|parakou|ouidah)\s*,?\s*le\s+(.{6,40})",
+    re.IGNORECASE,
+)
+
+#: Date en chiffres, chiffres confondus par l'OCR admis : « 10 - 03 - 1993 ».
+_DATE_CHIFFREE_RE = re.compile(
+    r"(?<![0-9])([0-9OoIl|]{1,2})\s*[/.-]\s*([0-9OoIl|]{1,2})\s*[/.-]\s*([0-9OoIl|]{4})(?![0-9])"
+)
 
 
 def _sans_accents(texte: str) -> str:
@@ -946,6 +956,10 @@ def date_retrouvee_dans_le_document(pages: Sequence[str], date_iso: Optional[str
     except ValueError:
         return None
     for zone in _zones_de_date(pages):
+        for m in _DATE_CHIFFREE_RE.finditer(zone):
+            j, mo, a = (g.translate(_OCR_CHIFFRES) for g in m.groups())
+            if j.isdigit() and mo.isdigit() and a.isdigit() and (int(j), int(mo), int(a)) == (jour, mois, annee):
+                return m.group(0)
         jetons = re.findall(r"[^\s]+", zone)
         for i in range(len(jetons) - 1):
             if i and re.fullmatch(r"\d", jetons[i - 1].strip(".,;:'\"")):

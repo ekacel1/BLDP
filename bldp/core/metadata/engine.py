@@ -379,18 +379,62 @@ def _search_date(text: str, patterns) -> tuple[Optional[str], int, str]:
     return None, -1, ""
 
 
+#: Formule de signature : « Fait à Cotonou, le 2 Novembre 1968 », ou la forme
+#: courte « Cotonou, le 10 Mars 1993 » des actes de la Cour suprême.
+_SIGNATURE_PREFIX_RE = re.compile(
+    r"(?:\bfait\s+[àa]\s+[^\s,]{3,25}|\b(?:cotonou|porto[\s-]*novo|abomey|parakou|ouidah))"
+    r"\s*,?\s*(?:le\s+)?",
+    re.IGNORECASE,
+)
+
+#: Dates qui ne sont pas celle de l'acte : date d'effet ou terme d'une période
+#: (« est remis à compter du 22 Mars 1993 »).
+_DATE_D_EFFET_RE = re.compile(
+    r"\b(?:[àa]\s+(?:compter|partir|dater)\s+du|jusqu['’]\s*au)\s+[^.;\n]{0,40}",
+    re.IGNORECASE,
+)
+
+
+#: Intitulé coupé juste avant sa date : « ORDONNANCE N° 93-04/PCS-CAB du ».
+#: C'est la seule situation où l'on va chercher la date à la ligne suivante —
+#: sinon on y prendrait n'importe quelle date, y compris une date d'effet.
+_COUPE_APRES_DU_RE = re.compile(r"\b(?:en\s+date\s+)?du\s*$", re.IGNORECASE)
+
+
+def _signature_date(text: str, patterns) -> tuple[Optional[str], str]:
+    """Date de la **dernière** formule de signature du texte, ou ``None``."""
+    trouvee: tuple[Optional[str], str] = (None, "")
+    for prefix in _SIGNATURE_PREFIX_RE.finditer(text or ""):
+        suite = text[prefix.end(): prefix.end() + 40]
+        for pattern in patterns:
+            match = pattern.match(suite) or (pattern.search(suite) if suite.lower().startswith("du") else None)
+            if not match:
+                continue
+            groups = match.groupdict()
+            iso = normalize_date(groups.get("day", ""), groups.get("month"),
+                                 groups.get("year", ""), groups.get("month_num"))
+            if iso:
+                trouvee = (iso, (prefix.group(0) + match.group(0)).strip())
+                break
+    return trouvee
+
+
 def detect_date(
     text: str,
     profile: JurisdictionProfile | None,
     number: Optional[str] = None,
+    signature_text: Optional[str] = None,
 ) -> tuple[Optional[str], float, str]:
     """Repère la date de signature du texte.
 
     Un texte cite les dates d'autres textes (« modifiant la loi n° 2022-09 du
     27 juin 2022 »). La date propre du document est celle de son **intitulé**.
     Lorsque le numéro officiel est connu, on cherche donc d'abord dans la ligne
-    qui le porte ; à défaut seulement, on élargit au reste de l'en-tête, avec
-    une confiance réduite et une preuve qui le dit.
+    qui le porte — ou la suivante, quand l'intitulé est coupé après « du » ;
+    puis dans la **formule de signature** (``signature_text`` : les dernières
+    pages) ; à défaut seulement, on élargit au reste de l'en-tête, avec une
+    confiance réduite et une preuve qui le dit. Les dates d'effet (« à compter
+    du ») ne sont jamais celle de l'acte.
 
     Returns:
         ``(date_iso, confiance, preuve)``.
@@ -400,23 +444,38 @@ def detect_date(
         return None, 0.0, ""
 
     if number:
-        for line in text.split("\n"):
+        lignes = text.split("\n")
+        for rang, line in enumerate(lignes):
             segment = _own_heading_segment(line, number)
             if segment is None:
                 continue
             iso, rank, evidence = _search_date(segment, patterns)
+            if not iso and rang + 1 < len(lignes) and _COUPE_APRES_DU_RE.search(segment):
+                # « ORDONNANCE N° 93-04/PCS-CAB du » / « 10 - 03 - 1993 » : la
+                # date de l'intitulé est passée à la ligne.
+                suite = lignes[rang + 1]
+                coupure = _NEXT_REFERENCE_RE.search(suite)
+                iso, rank, evidence = _search_date(
+                    segment + " " + (suite[:coupure.start()] if coupure else suite), patterns
+                )
             if iso:
                 # Date trouvée dans l'intitulé propre : c'est la plus fiable.
                 return iso, 0.95 if rank == 0 else 0.88, evidence
 
+    # La formule de signature date l'acte lui-même, et ne cite personne.
+    if signature_text:
+        iso, evidence = _signature_date(signature_text, patterns)
+        if iso:
+            return iso, 0.90, f"{evidence} (signature)"
+
     # Hors intitulé, on écarte d'abord les visas : « Vu la loi n° 90-32 du
     # 11 décembre 1990 » figure dans presque tous les textes béninois, et sa
-    # date était retenue comme celle du document.
-    hors_visas = strip_citation_lines(text)
+    # date était retenue comme celle du document. Les dates d'effet aussi.
+    hors_visas = _DATE_D_EFFET_RE.sub(" ", strip_citation_lines(text))
     iso, rank, evidence = _search_date(hors_visas, patterns)
     depuis_visa = False
     if not iso:
-        iso, rank, evidence = _search_date(text, patterns)
+        iso, rank, evidence = _search_date(_DATE_D_EFFET_RE.sub(" ", text), patterns)
         depuis_visa = True
     if not iso:
         return None, 0.0, ""
@@ -744,7 +803,8 @@ def extract_metadata(
     record("number", number, number_conf, number_evidence)
 
     # Le numéro est détecté avant la date : il sert à localiser l'intitulé.
-    date_iso, date_conf, date_evidence = detect_date(text, profile, number)
+    signature_text = "\n".join(page.text for page in pages[-2:])
+    date_iso, date_conf, date_evidence = detect_date(text, profile, number, signature_text)
 
     # La date subit le même piège que le numéro : le 11 décembre 1990, jour de
     # la Constitution, est visé par à peu près tout, et se retrouvait porté par

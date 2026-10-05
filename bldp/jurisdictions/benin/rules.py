@@ -214,7 +214,10 @@ DATE_PATTERNS = [
         r"juillet|ao[ûu]t|septembre|octobre|novembre|d[ée]cembre)\s+(?P<year>\d{4})\b",
         _FLAGS,
     ),
-    re.compile(r"\b(?P<day>\d{1,2})[/-](?P<month_num>\d{1,2})[/-](?P<year>\d{4})\b"),
+    # Forme numérique, espaces admis autour des séparateurs : l'ordonnance
+    # 93-04/PCS-CAB de la Cour suprême porte « du 10 - 03 - 1993 », que la
+    # forme stricte « 10-03-1993 » ne voyait pas (essai du 5 octobre 2026).
+    re.compile(r"\b(?P<day>\d{1,2})\s*[/.-]\s*(?P<month_num>\d{1,2})\s*[/.-]\s*(?P<year>\d{4})\b"),
 ]
 
 #: Sources officielles connues (métadonnée ``source``).
