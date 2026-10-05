@@ -215,6 +215,9 @@ class CleaningReport:
     #: signe que la couche texte du PDF vient d'un OCR anterieur.
     native_text_repaired: int = 0
     control_chars_removed: int = 0
+    #: Marques de balisage d'un lecteur vision-langage ramenees a du texte
+    #: (LaTeX, HTML, Markdown) — voir :func:`strip_reader_markup`.
+    reader_markup_removed: int = 0
     protected_lines_kept: int = 0
     warnings: list[str] = field(default_factory=list)
 
@@ -451,6 +454,107 @@ def collapse_whitespace(text: str) -> str:
     return text.strip()
 
 
+# ---------------------------------------------------------------------------
+# Balisage des lecteurs vision-langage (PaddleOCR-VL…)
+# ---------------------------------------------------------------------------
+
+#: Un segment ``$ … $`` n'est traité que s'il porte une marque LaTeX (``\``,
+#: ``^``, ``_{``) : « 5 $ et 6 $ » reste tel quel.
+_LATEX_SEGMENT_RE = re.compile(r"(?P<avant>[ \t]*)\$(?P<contenu>[^$\n]{0,160}?)\$")
+_LATEX_MARQUE_RE = re.compile(r"\\|\^|_\{")
+_LATEX_COMMANDE_A_CONTENU_RE = re.compile(
+    r"\\(?:underline|overline|text|textbf|textit|textrm|textup|mathrm|mathbf|mathit|"
+    r"mathsf|operatorname|emph|mbox|hbox)\s*\{([^{}]*)\}"
+)
+_LATEX_INDICE_RE = re.compile(r"[\^_]\{([^{}]*)\}")
+_LATEX_INDICE_SIMPLE_RE = re.compile(r"[\^_](\w)")
+_LATEX_SYMBOLES = (
+    ("\\%", "%"), ("\\&", "&"), ("\\times", "×"), ("\\cdot", "·"), ("\\circ", "°"),
+    ("\\degree", "°"), ("\\pm", "±"), ("\\leq", "≤"), ("\\geq", "≥"), ("\\neq", "≠"),
+    ("\\Delta", "Δ"), ("\\delta", "δ"), ("\\alpha", "α"), ("\\beta", "β"), ("\\mu", "µ"),
+    ("\\qquad", " "), ("\\quad", " "), ("\\,", " "), ("\\;", " "), ("\\!", ""), ("\\ ", " "),
+)
+_HTML_EXPOSANT_RE = re.compile(r"[ \t]*<(sup|sub)\b[^>]*>(.*?)</\1>", re.IGNORECASE | re.DOTALL)
+_HTML_TABLE_RE = re.compile(r"<table\b[^>]*>(.*?)</table>", re.IGNORECASE | re.DOTALL)
+_HTML_LIGNE_RE = re.compile(r"<tr\b[^>]*>(.*?)</tr>", re.IGNORECASE | re.DOTALL)
+_HTML_CELLULE_RE = re.compile(r"<t[dh]\b[^>]*>(.*?)</t[dh]>", re.IGNORECASE | re.DOTALL)
+_HTML_BALISE_RE = re.compile(
+    r"</?(?:table|thead|tbody|tfoot|tr|td|th|br|div|span|p|b|i|u|center|strong|em)\b[^>]*/?>",
+    re.IGNORECASE,
+)
+_MD_GRAS_RE = re.compile(r"\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*")
+_MD_TITRE_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
+
+
+def _latex_en_texte(contenu: str) -> str:
+    for _ in range(4):                       # imbrications : \underline{\text{…}}
+        contenu, n = _LATEX_COMMANDE_A_CONTENU_RE.subn(r"\1", contenu)
+        if not n:
+            break
+    contenu = _LATEX_INDICE_RE.sub(r"\1", contenu)
+    contenu = _LATEX_INDICE_SIMPLE_RE.sub(r"\1", contenu)
+    for commande, symbole in _LATEX_SYMBOLES:
+        contenu = contenu.replace(commande, symbole)
+    # Commande inconnue : on garde son nom — rien ne disparaît en silence.
+    contenu = re.sub(r"\\([A-Za-z]+)", r"\1", contenu)
+    contenu = contenu.replace("{", "").replace("}", "")
+    return " ".join(contenu.split())
+
+
+def _table_en_texte(table: str) -> str:
+    lignes = []
+    for ligne in _HTML_LIGNE_RE.findall(table):
+        cellules = [" ".join(_HTML_BALISE_RE.sub(" ", c).split()) for c in _HTML_CELLULE_RE.findall(ligne)]
+        if any(cellules):
+            lignes.append(" | ".join(cellules))
+    if not lignes:                           # tableau mal formé : on garde le texte, sans les balises
+        return " ".join(_HTML_BALISE_RE.sub(" ", table).split())
+    return "\n" + "\n".join(lignes) + "\n"
+
+
+def strip_reader_markup(text: str) -> tuple[str, int]:
+    """Ramène à du texte le balisage d'un lecteur vision-langage.
+
+    PaddleOCR-VL et ses semblables rendent les exposants et le souligné en
+    LaTeX (« DU $ 1^{er} $ JUIN 2022 »), les tableaux en HTML, le gras et les
+    titres en Markdown. Le pipeline lit du texte : sans ceci, la date de
+    l'acte et un article souligné lui échappaient (lot 1, tranche T001).
+
+    Seules les marques tombent, jamais le contenu : une commande LaTeX
+    inconnue garde son nom, une cellule de tableau son texte. Un texte sans
+    balisage ressort inchangé, et le compteur à zéro.
+    """
+    if not text:
+        return text, 0
+    compte = [0]
+
+    def segment(m: re.Match[str]) -> str:
+        contenu = m.group("contenu")
+        if not _LATEX_MARQUE_RE.search(contenu):
+            return m.group(0)
+        compte[0] += 1
+        texte = _latex_en_texte(contenu)
+        # « 1 $ ^{er} $ » : un exposant isolé se colle à ce qui précède → « 1er ».
+        return texte if re.match(r"\s*[\^_]", contenu) else m.group("avant") + texte
+
+    if "$" in text:
+        text = _LATEX_SEGMENT_RE.sub(segment, text)
+    if "<" in text:
+        text, n = _HTML_EXPOSANT_RE.subn(lambda m: m.group(2).strip(), text)
+        compte[0] += n
+        text, n = _HTML_TABLE_RE.subn(lambda m: _table_en_texte(m.group(1)), text)
+        compte[0] += n
+        text, n = _HTML_BALISE_RE.subn("", text)
+        compte[0] += n
+    if "**" in text:
+        text, n = _MD_GRAS_RE.subn(r"\1", text)
+        compte[0] += n
+    if "#" in text:
+        text, n = _MD_TITRE_RE.subn("", text)
+        compte[0] += n
+    return text, compte[0]
+
+
 def apply_ocr_fixes(text: str) -> tuple[str, int]:
     """Corrige les confusions OCR les plus sûres.
 
@@ -583,6 +687,11 @@ def clean_page_text(
         report.control_chars_removed += removed
     if section.get("normalize_unicode", True):
         text = normalize_unicode(text)
+    if section.get("strip_reader_markup", True):
+        # Avant tout le reste : les règles suivantes (articles, dates, OCR)
+        # attendent du texte, pas « $ \underline{\text{Article 2}} $ ».
+        text, markup = strip_reader_markup(text)
+        report.reader_markup_removed += markup
     if section.get("ocr_confusion_fixes", True):
         # Volontairement **sans** condition sur ``is_ocr``. Un PDF peut arriver
         # avec une couche texte produite par l'OCR de quelqu'un d'autre : le
