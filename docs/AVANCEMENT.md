@@ -1,6 +1,6 @@
 # Avancement de BLDP
 
-_Mis à jour automatiquement le 2026-10-05 19:00 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
+_Mis à jour automatiquement le 2026-10-05 19:41 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
 
 ## Méthode en cours
 
@@ -12,24 +12,24 @@ Le lot1 est relu en entier par **PaddleOCR-VL** (Colab, GPU), par tranches de 50
 
 La validation définitive reste humaine (§16) : `valide` n'est jamais posé par une IA.
 
-**Prochaine action :** lancer la lecture de T001 (PaddleOCR-VL sur Colab).
+**Prochaine action :** Gemini vérifie T001 (ticket ouvert), puis le ticket est contrôlé et intégré.
 
 ## lot1 — par catégorie
 
 | Catégorie | Documents | Lus | Vérifiés par Gemini | Versés (base propre) | À revoir (humain) |
 |---|---:|---:|---:|---:|---:|
-| arrete | 2 | 0 | 0 | 0 | 0 |
-| decision | 2 | 0 | 0 | 0 | 0 |
-| accord | 12 | 0 | 0 | 0 | 0 |
+| arrete | 2 | 2 | 0 | 0 | 0 |
+| decision | 2 | 2 | 0 | 0 | 0 |
+| accord | 12 | 12 | 0 | 0 | 0 |
 | ordonnance | 977 | 0 | 0 | 0 | 0 |
 | loi | 1529 | 0 | 0 | 0 | 0 |
-| **total** | **2522** | **0** | **0** | **0** | **0** |
+| **total** | **2522** | **16** | **0** | **0** | **0** |
 
 ## Tranches (0/52 intégrées)
 
 | Tranche | Catégories | Docs | Pages | Statut | Lancée | Ticket | Vérifiée par | Intégrée | Conformes | Corrigés | À revoir |
 |---|---|---:|---:|---|---|---|---|---|---:|---:|---:|
-| T001 | arrete 2, decision 2, accord 12 | 16 | — | A_LANCER | — | — | — | — | — | — | — |
+| T001 | arrete 2, decision 2, accord 12 | 16 | 85 | A_VERIFIER | 2026-10-05 | 2026-10-05 | — | — | — | — | — |
 | T002 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T003 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T004 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
@@ -84,4 +84,6 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 
 ## Registre de suivi (base propre du lot)
 
-Aucun ticket pour l'instant.
+| Étape | Documents |
+|---|---:|
+| a_verifier | 16 |
