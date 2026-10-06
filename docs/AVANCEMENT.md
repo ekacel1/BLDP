@@ -1,6 +1,6 @@
 # Avancement de BLDP
 
-_Mis à jour automatiquement le 2026-10-05 23:33 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
+_Mis à jour automatiquement le 2026-10-06 01:13 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
 
 ## Méthode en cours
 
@@ -12,7 +12,7 @@ Le lot1 est relu en entier par **PaddleOCR-VL** (Colab, GPU), par tranches de 50
 
 La validation définitive reste humaine (§16) : `valide` n'est jamais posé par une IA.
 
-**Prochaine action :** lancer la lecture de T002 (PaddleOCR-VL sur Colab).
+**Prochaine action :** Gemini vérifie T002 (ticket ouvert), puis le ticket est contrôlé et intégré.
 
 ## lot1 — par catégorie
 
@@ -21,16 +21,16 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 | arrete | 2 | 2 | 2 | 2 | 0 |
 | decision | 2 | 2 | 2 | 1 | 1 |
 | accord | 12 | 12 | 12 | 6 | 6 |
-| ordonnance | 977 | 0 | 0 | 0 | 0 |
+| ordonnance | 977 | 50 | 0 | 0 | 0 |
 | loi | 1529 | 0 | 0 | 0 | 0 |
-| **total** | **2522** | **16** | **16** | **9** | **7** |
+| **total** | **2522** | **66** | **16** | **9** | **7** |
 
 ## Tranches (1/52 intégrées)
 
 | Tranche | Catégories | Docs | Pages | Statut | Lancée | Ticket | Vérifiée par | Intégrée | Conformes | Corrigés | À revoir |
 |---|---|---:|---:|---|---|---|---|---|---:|---:|---:|
 | T001 | arrete 2, decision 2, accord 12 | 16 | 85 | INTEGREE | 2026-10-05 | 2026-10-05 | gemini (gemini-3.8-flash) | 2026-10-05 | — | 9 | 7 |
-| T002 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
+| T002 | ordonnance 50 | 50 | 126 | A_VERIFIER | 2026-10-05 | 2026-10-06 | — | — | — | — | — |
 | T003 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T004 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T005 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
@@ -86,5 +86,6 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 
 | Étape | Documents |
 |---|---:|
+| a_verifier | 50 |
 | en_revue | 7 |
 | revue_ia | 9 |
