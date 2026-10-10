@@ -139,6 +139,13 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # « Artiole », « ARTIOLE » : le c lu o. Lot 1, tranche T002 : 13 articles de la Loi
     # fondamentale de 1977 (ordonnance 77-32) manquaient pour cette seule lecture.
     (re.compile(r"\bArtiole\b"), "Article"),
+    # Tranche T003 : « Articlo », « Articolo » (e lu o), « A article 52.- » (A parasite en
+    # début de ligne), « _ticle ler.- » (« Ar » perdu). Toujours en tête de ligne et devant
+    # un numéro, là où seul un en-tête d'article a ce sens.
+    (re.compile(r"\bArtic(?:o)?lo\b(?=\s*[0-9Il]|\s+premier)"), "Article"),
+    (re.compile(r"\bARTIC(?:O)?LO\b(?=\s*[0-9Il]|\s+PREMIER)"), "ARTICLE"),
+    (re.compile(r"(?m)^A\s+(?:a|A)rticle(?=\s+\d)"), "Article"),
+    (re.compile(r"(?m)^_+ticle(?=\s+(?:\d|[Il1][e]r\b))"), "Article"),
     # « VU le Décrit n° 215/PR » : le e de Décret frappé ou lu i. Devant un numéro
     # seulement, où « décrit » (participe) n'a pas de sens. Tranches T002-T003.
     (re.compile(r"\bDécrit(?=\s*n\s*[°o])", re.IGNORECASE), "Décret"),

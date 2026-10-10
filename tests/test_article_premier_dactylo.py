@@ -76,3 +76,11 @@ def test_le_lu_1e_devant_une_date():
     from bldp.core.cleaning.normalizer import fix_typewriter_one_in_dates as f
     assert f("COTONOU, 1e I3 Décembre 1963.")[0] == "COTONOU, le 13 Décembre 1963."
     assert f("Article 1e 3 mars")[0] == "Article 1e 3 mars"
+
+
+def test_variantes_t003():
+    assert apply_ocr_fixes("Articlo 42.- Sera puni")[0] == "Article 42.- Sera puni"
+    assert apply_ocr_fixes("Articolo 64.- Les")[0] == "Article 64.- Les"
+    assert apply_ocr_fixes("fin.\nA article 52.- Le juge")[0] == "fin.\nArticle 52.- Le juge"
+    assert apply_ocr_fixes("ORDONNE\n_ticle ler.- Est")[0] == "ORDONNE\nArticle 1er.- Est"
+    assert apply_ocr_fixes("à article 52 de la loi")[0] == "à article 52 de la loi"
