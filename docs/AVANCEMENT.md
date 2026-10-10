@@ -1,6 +1,6 @@
 # Avancement de BLDP
 
-_Mis à jour automatiquement le 2026-10-10 12:50 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
+_Mis à jour automatiquement le 2026-10-10 12:53 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
 
 ## Méthode en cours
 
@@ -34,7 +34,7 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 | T003 | ordonnance 50 | 50 | 110 | INTEGREE | 2026-10-10 | 2026-10-10 | claude (claude-opus-5-5), 7 vérificateurs en parallèle, à la demande de l'utilisateur | 2026-10-10 | — | 30 | 20 |
 | T004 | ordonnance 50 | 50 | 91 | INTEGREE | 2026-10-10 | 2026-10-10 | claude (claude-opus-5-5), 7 vérificateurs en parallèle, à la demande de l'utilisateur | 2026-10-10 | — | 30 | 20 |
 | T005 | ordonnance 50 | 50 | 107 | A_VERIFIER | 2026-10-10 | 2026-10-10 | — | — | — | — | — |
-| T006 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
+| T006 | ordonnance 50 | 50 | — | EN_COURS | 2026-10-10 | — | — | — | — | — | — |
 | T007 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T008 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T009 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
