@@ -122,6 +122,14 @@ _ECRITURE_ETRANGERE_RE = re.compile(
 )
 
 
+#: Mots-outils anglais et français : une ligne faite surtout des premiers est inventée
+#: (« The quick brown fox jumps over the lazy dog. », « I'll trust », tranches T002-T004).
+_MOTS_ANGLAIS = {"the", "and", "of", "to", "is", "over", "with", "for", "this", "that", "jumps",
+                 "lazy", "dog", "quick", "brown", "fox", "you", "it", "are", "was", "be", "i'll", "trust"}
+_MOTS_FRANCAIS = {"le", "la", "les", "de", "des", "du", "et", "en", "un", "une", "au", "aux", "par",
+                  "pour", "est", "sont", "sur", "dans", "qui", "que", "l'", "d'"}
+
+
 def lecture_inventee(texte: str) -> str | None:
     """Dit pourquoi un texte semble inventé par la lecture, ou ``None``.
 
@@ -133,6 +141,12 @@ def lecture_inventee(texte: str) -> str | None:
     m = _ECRITURE_ETRANGERE_RE.search(texte or "")
     if m:
         return f"écriture étrangère au texte (« {texte[max(0, m.start() - 10):m.end() + 10]} »)"
+    for ligne in (texte or "").split("\n"):
+        mots = re.findall(r"[a-z']+", ligne.lower())
+        anglais = sum(m in _MOTS_ANGLAIS for m in mots)
+        francais = sum(m in _MOTS_FRANCAIS for m in mots)
+        if anglais >= 3 and anglais > 2 * francais:
+            return f"phrase anglaise (« {ligne.strip()[:60]} »)"
     jetons = [re.sub(r"\d+", "9", j) for j in (texte or "").split()]
     for periode in (1, 2):
         suite = 1

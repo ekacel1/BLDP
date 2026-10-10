@@ -20,3 +20,8 @@ def test_un_texte_sain_ou_un_tableau_ne_sont_pas_signales():
     assert lecture_inventee("ARTICLE 2.- La présente ordonnance sera exécutée comme loi de l'Etat.") is None
     assert lecture_inventee(" ".join(["1 000 000"] * 40)) is None
     assert lecture_inventee("de la loi de la République de la Nation " * 3) is None
+
+
+def test_phrase_anglaise_inventee():
+    assert "anglaise" in lecture_inventee("Article 3 : la loi\nThe quick brown fox jumps over the lazy dog.")
+    assert lecture_inventee("Vu la loi n° 65-3 et le décret du 2 mars, of the act") is None
