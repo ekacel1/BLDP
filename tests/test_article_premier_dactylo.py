@@ -18,3 +18,9 @@ def test_ler_et_icr():
 def test_rien_d_autre_ne_bouge():
     for texte in ("ARTICLE II.- Les dépenses", "Article 1er.- Est autorisée", "Article Iles", "l'article Ier de la loi"):
         assert apply_ocr_fixes(texte)[0] == texte
+
+
+def test_artiole():
+    assert apply_ocr_fixes("Artiole 23 : Le Parti")[0] == "Article 23 : Le Parti"
+    assert apply_ocr_fixes("ARTIOLE 5.- La loi")[0] == "ARTICLE 5.- La loi"
+    assert apply_ocr_fixes("Artiole ler.- Le Bénin")[0] == "Article 1er.- Le Bénin"

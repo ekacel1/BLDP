@@ -136,6 +136,10 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"(?!ARTICLE\b)\bA[RN][TL][IL1][CD][LT1][EÈ3]\b"), "ARTICLE"),
     # Formes de six lettres, où une lettre a fusionné avec sa voisine.
     (re.compile(r"\bArti(?:cte|de|cie|clc|cle\.|ele)\b"), "Article"),
+    # « Artiole », « ARTIOLE » : le c lu o. Lot 1, tranche T002 : 13 articles de la Loi
+    # fondamentale de 1977 (ordonnance 77-32) manquaient pour cette seule lecture.
+    (re.compile(r"\bArtiole\b"), "Article"),
+    (re.compile(r"\bARTIOLE\b"), "ARTICLE"),
     (re.compile(r"(?!Article\b)\bAr[tU][Ui]?cle\b"), "Article"),
     (re.compile(r"\bAdi[cd]le\b"), "Article"),
     # Le « r » avalé : « Aticle », « Atticle », « Atlicle », « Aficle ».
