@@ -1,13 +1,13 @@
 # Avancement de BLDP
 
-_Mis à jour automatiquement le 2026-10-10 02:30 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
+_Mis à jour automatiquement le 2026-10-10 02:31 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
 
 ## Méthode en cours
 
 Le lot1 est relu en entier par **PaddleOCR-VL** (Colab, GPU), par tranches de 50 documents, au rythme de 100 documents par jour. Une tranche ne mélange jamais deux catégories, sauf les plus petites, regroupées ; chaque document garde sa catégorie. Après chaque tranche :
 
 1. le pipeline ouvre un **ticket** (registre : `a_verifier`) ;
-2. **Gemini** vérifie chaque document contre la photo de ses pages, corrige ce qu'il sait corriger exactement, et valide le ticket ;
+2. **une IA** (Gemini, ou Claude en parallèle à la demande de l'utilisateur) vérifie chaque document contre la photo de ses pages, corrige ce qu'elle sait corriger exactement, et valide le ticket ;
 3. sa réponse est contrôlée, puis les données vérifiées rejoignent la **base propre** du lot (registre : `revue_ia`). Les cas douteux attendent un humain (`en_revue`).
 
 La validation définitive reste humaine (§16) : `valide` n'est jamais posé par une IA.
@@ -16,7 +16,7 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 
 ## lot1 — par catégorie
 
-| Catégorie | Documents | Lus | Vérifiés par Gemini | Versés (base propre) | À revoir (humain) |
+| Catégorie | Documents | Lus | Vérifiés par IA | Versés (base propre) | À revoir (humain) |
 |---|---:|---:|---:|---:|---:|
 | arrete | 2 | 2 | 2 | 2 | 0 |
 | decision | 2 | 2 | 2 | 2 | 0 |
