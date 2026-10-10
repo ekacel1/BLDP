@@ -1,6 +1,6 @@
 # Avancement de BLDP
 
-_Mis à jour automatiquement le 2026-10-10 03:03 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
+_Mis à jour automatiquement le 2026-10-10 03:04 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
 
 ## Méthode en cours
 
@@ -32,7 +32,7 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 | T001 | arrete 2, decision 2, accord 12 | 16 | 85 | INTEGREE | 2026-10-05 | 2026-10-05 | gemini (gemini-3.8-flash) | 2026-10-05 | — | 9 | 7 |
 | T002 | ordonnance 50 | 50 | 126 | INTEGREE | 2026-10-05 | 2026-10-06 | claude (claude-opus-5-5), 7 vérificateurs en parallèle, à la demande de l'utilisateur | 2026-10-10 | 1 | 23 | 26 |
 | T003 | ordonnance 50 | 50 | 110 | A_VERIFIER | 2026-10-10 | 2026-10-10 | — | — | — | — | — |
-| T004 | ordonnance 50 | 50 | — | ECHEC | 2026-10-10 | — | — | — | — | — | — |
+| T004 | ordonnance 50 | 50 | — | EN_COURS | 2026-10-10 | — | — | — | — | — | — |
 | T005 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T006 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T007 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
