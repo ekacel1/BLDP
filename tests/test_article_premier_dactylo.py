@@ -70,3 +70,9 @@ def test_la_date_de_signature_redevient_lisible():
     from bldp.jurisdictions.registry import get_jurisdiction
     texte = apply_ocr_fixes("ORDONNANCE N° 19/GPRD\nVU l'ordonnance du 8 Novembre 1963\nCOTONOU, le I3 Décembre I963.")[0]
     assert detect_date(texte, get_jurisdiction("benin"), None, texte)[0] == "1963-12-13"
+
+
+def test_le_lu_1e_devant_une_date():
+    from bldp.core.cleaning.normalizer import fix_typewriter_one_in_dates as f
+    assert f("COTONOU, 1e I3 Décembre 1963.")[0] == "COTONOU, le 13 Décembre 1963."
+    assert f("Article 1e 3 mars")[0] == "Article 1e 3 mars"

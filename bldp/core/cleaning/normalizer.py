@@ -596,6 +596,13 @@ _DATE_I_RE = re.compile(
 )
 
 
+_LE_DEVANT_DATE_RE = re.compile(
+    r"(?<=,\s)[1I]e(?=\s+[0-3]?[0-9](?:er)?\s+(?:janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[ûu]t"
+    r"|septembre|octobre|novembre|d[ée]cembre)\s+(?:19|20)\d\d\b)",
+    re.IGNORECASE,
+)
+
+
 def fix_typewriter_one_in_dates(text: str) -> tuple[str, int]:
     """Rend le « 1 » tapé « I » dans les dates (voir ``_DATE_I_RE``)."""
     compte = [0]
@@ -607,7 +614,10 @@ def fix_typewriter_one_in_dates(text: str) -> tuple[str, int]:
         compte[0] += 1
         return jour.replace("I", "1") + m.group("milieu") + annee.replace("I", "1")
 
-    return _DATE_I_RE.sub(rendre, text), compte[0]
+    text = _DATE_I_RE.sub(rendre, text)
+    # « COTONOU, 1e 13 Décembre 1963 » : l'article « le » lu « 1e » devant une date.
+    text, n = _LE_DEVANT_DATE_RE.subn("le", text)
+    return text, compte[0] + n
 
 
 def apply_ocr_fixes(text: str) -> tuple[str, int]:
