@@ -42,3 +42,10 @@ def test_o_decoratif_de_ordonne():
 def test_o_decoratif_rien_d_autre():
     for texte in ("O R D O N N E :", "ORDONNANCE N° 12", "la présente ordonnance", "BORDONNE", "un (二) seul"):
         assert restore_decorative_o(texte) == (texte, 0)
+
+
+def test_o_decoratif_autres_ornements():
+    assert restore_decorative_o("(0) R D O N N E :")[0] == "O R D O N N E :"
+    assert restore_decorative_o("(□)RDONNANCE N° 48")[0] == "ORDONNANCE N° 48"
+    assert restore_decorative_o("(C)RDONNANCE N° 27")[0] == "ORDONNANCE N° 27"
+    assert restore_decorative_o("(O) R D O N N E")[0] == "O R D O N N E"

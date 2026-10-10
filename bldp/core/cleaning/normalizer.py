@@ -577,7 +577,7 @@ def strip_reader_markup(text: str) -> tuple[str, int]:
 #: une case, est lu « (二) », « (一) », « (_) » ou disparaît : « RDONNANCE », « R D O N N E ».
 #: Lot 1, tranche T002 : la moitié des ordonnances de 1963-1968. On ne rend le « O » que
 #: devant « R D O N N », jamais ailleurs ; aucun mot français ne commence par « RDONN ».
-_O_DECORATIF_RE = re.compile(r"(?:\(\s*[二一_\-]?\s*\)|[二一])?[ \t]*(?<![A-Za-zÀ-ÿ])(?<!O )(R(\s?)D\s?O\s?N\s?N)")
+_O_DECORATIF_RE = re.compile(r"(?:\(\s*[二一_\-0OC□口○◯〇]?\s*\)|[二一□口○◯〇])?[ \t]*(?<![A-Za-zÀ-ÿ])(?<!O )(R(\s?)D\s?O\s?N\s?N)")
 
 
 def restore_decorative_o(text: str) -> tuple[str, int]:
