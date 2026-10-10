@@ -157,6 +157,10 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # contexte « Article » rend la substitution sûre.
     (re.compile(r"(?<=\bArticle )[lI](?=\d)"), "1"),
     (re.compile(r"\bArticle\s+leI\b"), "Article 1er"),
+    # « ARTICLE Ier.- », « Article ler.- », « ARTICLE Icr : » : l'article premier des
+    # textes dactylographiés (« Ier », lu aussi « ler », « Icr »). Lot 1, tranche T002 :
+    # l'article premier manquait ainsi dans 9 ordonnances sur 50.
+    (re.compile(r"\b(Article|ARTICLE)[ \t_]*[Il|][ \t]?(?:er|ER|cr|èr)(?!\w)"), r"\1 1er"),
     # Zéro/O au milieu d'un nombre : « 2O26 » -> « 2026 »
     (re.compile(r"(?<=\d)[OoQ](?=\d)"), "0"),
     # Un/l/I au milieu d'un nombre : « 2l26 » -> « 2126 »
