@@ -141,6 +141,14 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     (re.compile(r"\bArtiole\b"), "Article"),
     # Tranche T004 : « ARSIOLE 2.- » (t lu s, c lu i) ; « ARTICLE 1er!- » (point lu « ! »).
     (re.compile(r"\bArsiole\b"), "Article"),
+    # « ARTICLE 2→ La présente » : le « .- » lu comme une flèche (T005).
+    (re.compile(r"(?<=\b(?:ARTICLE|Article) )(\d{1,4}(?:er)?)\s*→"), r"\1.-"),
+    # Lectures fautives qui reviennent dans presque chaque ordonnance (T003-T005) ; aucun de
+    # ces mots n'existe en français.
+    (re.compile(r"\bAmplications\b"), "Ampliations"),
+    (re.compile(r"\bAMPLICATIONS\b"), "AMPLIATIONS"),
+    (re.compile(r"\bGOUVERNMENT\b"), "GOUVERNEMENT"),
+    (re.compile(r"\bCHIEF(?=\s+DU\s+GOUVERNEMENT\b)"), "CHEF"),
     # « ARTI CLE 2.- » : le mot coupé en deux, l'article était pris pour « I » (T004).
     (re.compile(r"\bARTI\s+CLE(?=\s+\d)"), "ARTICLE"),
     (re.compile(r"\bArti\s+cle(?=\s+\d)"), "Article"),

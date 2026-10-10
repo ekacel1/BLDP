@@ -95,3 +95,10 @@ def test_variantes_t004():
 def test_arti_cle_coupe():
     assert apply_ocr_fixes("ARTI CLE 2.- La présente")[0] == "ARTICLE 2.- La présente"
     assert apply_ocr_fixes("Arti cle 4 : Le")[0] == "Article 4 : Le"
+
+
+def test_lectures_frequentes_t005():
+    assert apply_ocr_fixes("ARTICLE 2→ La présente ordonnance")[0] == "ARTICLE 2.- La présente ordonnance"
+    assert apply_ocr_fixes("Amplications :")[0] == "Ampliations :"
+    assert apply_ocr_fixes("CHIEF DU GOUVERNMENT,")[0] == "CHEF DU GOUVERNEMENT,"
+    assert apply_ocr_fixes("the chief of staff")[0] == "the chief of staff"
