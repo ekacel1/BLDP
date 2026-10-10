@@ -90,3 +90,8 @@ def test_variantes_t004():
     assert apply_ocr_fixes("ARSIOLE 2.- Les Hautes Parties")[0] == "ARTICLE 2.- Les Hautes Parties"
     assert apply_ocr_fixes("ARTICLE 1er!- Sont ouverts")[0] == "ARTICLE 1er.- Sont ouverts"
     assert apply_ocr_fixes("Attention!- fin")[0] == "Attention!- fin"
+
+
+def test_arti_cle_coupe():
+    assert apply_ocr_fixes("ARTI CLE 2.- La présente")[0] == "ARTICLE 2.- La présente"
+    assert apply_ocr_fixes("Arti cle 4 : Le")[0] == "Article 4 : Le"
