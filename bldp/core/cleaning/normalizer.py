@@ -490,6 +490,10 @@ _HTML_BALISE_RE = re.compile(
     r"</?(?:table|thead|tbody|tfoot|tr|td|th|br|div|span|p|b|i|u|center|strong|em)\b[^>]*/?>",
     re.IGNORECASE,
 )
+#: LaTeX resté hors de ses « $ » : « N^{\circ} », « 1^{er} » (lot 1, reprise T002R1).
+_LATEX_NU_RE = re.compile(r"\^\{\\circ\}|\^\{(?:\\text\{)?(er|re|e|ème|eme)\}?\}")
+#: « $ ORDONNANCE $ » : des « $ » autour de mots en capitales seulement.
+_DOLLARS_CAPITALES_RE = re.compile(r"\$[ \t]*([A-ZÀ-Ý][A-ZÀ-Ý '’.-]{2,60}?)[ \t]*\$")
 _MD_GRAS_RE = re.compile(r"\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*")
 _MD_TITRE_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
 
@@ -547,6 +551,12 @@ def strip_reader_markup(text: str) -> tuple[str, int]:
 
     if "$" in text:
         text = _LATEX_SEGMENT_RE.sub(segment, text)
+    if "^{" in text:
+        text, n = _LATEX_NU_RE.subn(lambda m: m.group(1) or "°", text)
+        compte[0] += n
+    if "$" in text:
+        text, n = _DOLLARS_CAPITALES_RE.subn(r"\1", text)
+        compte[0] += n
     if "<" in text:
         text, n = _HTML_EXPOSANT_RE.subn(lambda m: m.group(2).strip(), text)
         compte[0] += n

@@ -78,3 +78,15 @@ class TestDansLePipeline:
             "DÉCRET n° 2022-324 DU $ 1^{er} $ JUIN 2022 portant création de l'Agence\n"
             "Vu le décret n° 2017-555 du 15 novembre 2017 portant attributions", config, is_ocr=True)
         assert detect_date(entete, benin, "2022-324")[0] == "2022-06-01"
+
+
+class TestLatexHorsDollars:
+    def test_degre_et_exposant_nus(self):
+        assert strip_reader_markup("ORDONNANCE N^{\\circ} 13/PR/SGG")[0] == "ORDONNANCE N° 13/PR/SGG"
+        assert strip_reader_markup("le 1^{er} juin")[0] == "le 1er juin"
+
+    def test_dollars_autour_de_capitales(self):
+        assert strip_reader_markup("$ ORDONNANCE $ N° 10")[0] == "ORDONNANCE N° 10"
+
+    def test_dollars_ordinaires_intacts(self):
+        assert strip_reader_markup("5 $ et 6 $ US") == ("5 $ et 6 $ US", 0)
