@@ -1,6 +1,6 @@
 # Avancement de BLDP
 
-_Mis à jour automatiquement le 2026-10-10 02:27 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
+_Mis à jour automatiquement le 2026-10-10 02:28 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
 
 ## Méthode en cours
 
@@ -86,5 +86,5 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 
 | Étape | Documents |
 |---|---:|
-| en_revue | 26 |
-| revue_ia | 40 |
+| en_revue | 19 |
+| revue_ia | 47 |
