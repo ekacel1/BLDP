@@ -1,6 +1,6 @@
 # Avancement de BLDP
 
-_Mis à jour automatiquement le 2026-10-10 03:28 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
+_Mis à jour automatiquement le 2026-10-10 04:09 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
 
 ## Méthode en cours
 
@@ -12,7 +12,7 @@ Le lot1 est relu en entier par **PaddleOCR-VL** (Colab, GPU), par tranches de 50
 
 La validation définitive reste humaine (§16) : `valide` n'est jamais posé par une IA.
 
-**Prochaine action :** lecture de T004 en cours sur Colab.
+**Prochaine action :** une IA (Gemini, ou Claude à la demande de l'utilisateur) vérifie T004, puis le ticket est contrôlé et intégré.
 
 ## lot1 — par catégorie
 
@@ -21,9 +21,9 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 | arrete | 2 | 2 | 2 | 2 | 0 |
 | decision | 2 | 2 | 2 | 2 | 0 |
 | accord | 12 | 12 | 12 | 12 | 0 |
-| ordonnance | 977 | 100 | 100 | 61 | 39 |
+| ordonnance | 977 | 150 | 100 | 61 | 39 |
 | loi | 1529 | 0 | 0 | 0 | 0 |
-| **total** | **2522** | **116** | **116** | **77** | **39** |
+| **total** | **2522** | **166** | **116** | **77** | **39** |
 
 ## Tranches (3/52 intégrées)
 
@@ -32,7 +32,7 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 | T001 | arrete 2, decision 2, accord 12 | 16 | 85 | INTEGREE | 2026-10-05 | 2026-10-05 | gemini (gemini-3.8-flash) | 2026-10-05 | — | 9 | 7 |
 | T002 | ordonnance 50 | 50 | 126 | INTEGREE | 2026-10-05 | 2026-10-06 | claude (claude-opus-5-5), 7 vérificateurs en parallèle, à la demande de l'utilisateur | 2026-10-10 | 1 | 23 | 26 |
 | T003 | ordonnance 50 | 50 | 110 | INTEGREE | 2026-10-10 | 2026-10-10 | claude (claude-opus-5-5), 7 vérificateurs en parallèle, à la demande de l'utilisateur | 2026-10-10 | — | 30 | 20 |
-| T004 | ordonnance 50 | 50 | — | EN_COURS | 2026-10-10 | — | — | — | — | — | — |
+| T004 | ordonnance 50 | 50 | 91 | A_VERIFIER | 2026-10-10 | 2026-10-10 | — | — | — | — | — |
 | T005 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T006 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T007 | ordonnance 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
@@ -95,5 +95,6 @@ File humaine actuelle : 39 document(s), listés sur le VPS dans `propre/lot1/a_r
 
 | Étape | Documents |
 |---|---:|
+| a_verifier | 50 |
 | en_revue | 39 |
 | revue_ia | 77 |
