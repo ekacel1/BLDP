@@ -94,7 +94,7 @@ TITLE_KEYWORD_RE = re.compile(
     # devise nationale imprimée en tête de page.
     r"\b(?:portant|relatives?\s+(?:aux?|[àa])|relatifs?\s+(?:aux?|[àa])"
     r"|fixant|instituant|modifiant|compl[ée]tant|abrogeant|cr[ée]ant"
-    r"|organisant|autorisant|approuvant|ratifiant)\b",
+    r"|organisant|autorisant|approuvant|ratifiant|rapportant)\b",
     re.IGNORECASE,
 )
 
@@ -606,6 +606,46 @@ def detect_authority(text: str, profile: JurisdictionProfile | None) -> tuple[Op
     return None, 0.0, ""
 
 
+#: En-tête de l'acte, intitulé d'un texte sans « portant … » : « ORDONNANCE N° 12/GPRD »,
+#: « O R D O N N A N C E » puis « ANNEE 1966 - N° 48 /PR/MFAE » (lot 1, tranche T002 : les
+#: ordonnances de 1963-1968 n'ont souvent pas d'objet ; le pipeline prenait « Gouvernement
+#: provisoire » ou « République du Dahomey » pour intitulé).
+_ENTETE_ACTE_RE = re.compile(
+    r"^(?:O\s?)?(?P<type>R\s?D\s?O\s?N\s?N\s?A\s?N\s?C\s?E|L\s?O\s?I|D\s?[ÉE]\s?C\s?R\s?E\s?T"
+    r"|A\s?R\s?R\s?[ÊE]\s?T\s?[ÉE]|D\s?[ÉE]\s?C\s?I\s?S\s?I\s?O\s?N)\b(?P<suite>.*)$",
+    re.IGNORECASE,
+)
+_ENTETE_TYPES = {"RDONNANCE": "ORDONNANCE", "LOI": "LOI", "DECRET": "DÉCRET", "DÉCRET": "DÉCRET",
+                 "ARRETE": "ARRÊTÉ", "ARRÊTÉ": "ARRÊTÉ", "ARRÊTE": "ARRÊTÉ", "ARRETÉ": "ARRÊTÉ",
+                 "DECISION": "DÉCISION", "DÉCISION": "DÉCISION"}
+_ENTETE_NUMERO_RE = re.compile(r"\bN\s*[°o0º]\s*\S", re.IGNORECASE)
+#: Visas et formules de préambule : jamais un intitulé, même s'ils citent un « portant … ».
+_VISA_RE = re.compile(
+    r"^(?:vu|v\.u\.|sur\s+(?:la\s+)?(?:proposition|rapport)|le\s+conseil\s+des\s+ministres|apr[èe]s\s+avis)\b",
+    re.IGNORECASE,
+)
+
+
+def _entete_de_l_acte(lines: list[str]) -> Optional[str]:
+    """L'en-tête « TYPE N° … » des premières lignes, mis au propre, ou ``None``."""
+    for index, line in enumerate(lines[:25]):
+        if _ARTICLE_START_RE.match(line):
+            break
+        m = _ENTETE_ACTE_RE.match(line)
+        if not m:
+            continue
+        suite = m.group("suite").strip()
+        if not _ENTETE_NUMERO_RE.search(suite) and index + 1 < len(lines) \
+                and len(lines[index + 1]) < 60 and _ENTETE_NUMERO_RE.search(lines[index + 1]):
+            suite = f"{suite} {lines[index + 1]}".strip()
+        if not _ENTETE_NUMERO_RE.search(suite):
+            continue
+        mot = re.sub(r"\s", "", m.group("type")).upper()
+        entete = f"{_ENTETE_TYPES.get(mot, mot)} {suite}"
+        return re.sub(r"\s+", " ", entete).strip(" .;:—–-")[:400]
+    return None
+
+
 def detect_title(
     text: str,
     document_type: DocumentType,
@@ -622,6 +662,8 @@ def detect_title(
     for index, line in enumerate(lines[:25]):
         if _ARTICLE_START_RE.match(line):
             break  # au-delà du premier article, plus d'intitulé à trouver
+        if _VISA_RE.match(line):
+            continue  # un visa cite d'autres textes : son « portant … » n'est pas l'objet de l'acte
         match = TITLE_KEYWORD_RE.search(line)
         if not match:
             continue
@@ -637,6 +679,10 @@ def detect_title(
         if number and _mentions_number(preceding, number):
             return _tidy_title(f"{preceding} {line}"), 0.85, line[:80]
         return _tidy_title(line), 0.85, line[:80]
+
+    entete = _entete_de_l_acte(lines)
+    if entete:
+        return entete, 0.60, "en-tête de l'acte (pas d'intitulé « portant … »)"
 
     for line in lines[:12]:
         if len(line) < 12 or line.isdigit():
