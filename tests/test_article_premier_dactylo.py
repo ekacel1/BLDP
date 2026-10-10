@@ -49,3 +49,24 @@ def test_o_decoratif_autres_ornements():
     assert restore_decorative_o("(□)RDONNANCE N° 48")[0] == "ORDONNANCE N° 48"
     assert restore_decorative_o("(C)RDONNANCE N° 27")[0] == "ORDONNANCE N° 27"
     assert restore_decorative_o("(O) R D O N N E")[0] == "O R D O N N E"
+
+
+def test_un_tape_i_dans_les_dates():
+    from bldp.core.cleaning.normalizer import fix_typewriter_one_in_dates as f
+    assert f("COTONOU, le I3 Décembre I963.")[0] == "COTONOU, le 13 Décembre 1963."
+    assert f("COTONOU, le 3I Décembre 1963")[0] == "COTONOU, le 31 Décembre 1963"
+    assert f("la loi n°65-3I du I4 Août I965")[0] == "la loi n°65-3I du 14 Août 1965"
+    assert f("COTONOU, le I4 JANVIER 1964")[0] == "COTONOU, le 14 JANVIER 1964"
+
+
+def test_un_tape_i_rien_d_autre():
+    from bldp.core.cleaning.normalizer import fix_typewriter_one_in_dates as f
+    for texte in ("le 1er Janvier 1964", "TITRE II", "Chapitre III mars", "le 12 mars 2019"):
+        assert f(texte) == (texte, 0)
+
+
+def test_la_date_de_signature_redevient_lisible():
+    from bldp.core.metadata.engine import detect_date
+    from bldp.jurisdictions.registry import get_jurisdiction
+    texte = apply_ocr_fixes("ORDONNANCE N° 19/GPRD\nVU l'ordonnance du 8 Novembre 1963\nCOTONOU, le I3 Décembre I963.")[0]
+    assert detect_date(texte, get_jurisdiction("benin"), None, texte)[0] == "1963-12-13"

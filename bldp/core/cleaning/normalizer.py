@@ -585,6 +585,31 @@ def restore_decorative_o(text: str) -> tuple[str, int]:
     return _O_DECORATIF_RE.subn(lambda m: "O" + m.group(2) + m.group(1), text)
 
 
+#: Les machines à écrire sans touche « 1 » : le chiffre un tapé « I » dans les dates
+#: (« COTONOU, le I3 Décembre I963 », « du I4 Août I965 », « le 3I Décembre »). Lot 1,
+#: tranche T002 : la date de signature échappait au pipeline, qui retenait celle d'un
+#: visa. Seulement dans une date complète avec son mois en toutes lettres.
+_DATE_I_RE = re.compile(
+    r"\b(?P<jour>[0-3I]?[0-9I])(?P<milieu>(?:er)?\s+(?:janvier|f[ée]vrier|mars|avril|mai|juin|juillet"
+    r"|ao[ûu]t|septembre|octobre|novembre|d[ée]cembre)\s+)(?P<annee>[I1][9I][0-9I]{2}|20[0-9I]{2})\b",
+    re.IGNORECASE,
+)
+
+
+def fix_typewriter_one_in_dates(text: str) -> tuple[str, int]:
+    """Rend le « 1 » tapé « I » dans les dates (voir ``_DATE_I_RE``)."""
+    compte = [0]
+
+    def rendre(m: re.Match[str]) -> str:
+        jour, annee = m.group("jour"), m.group("annee")
+        if "I" not in jour and "I" not in annee:
+            return m.group(0)
+        compte[0] += 1
+        return jour.replace("I", "1") + m.group("milieu") + annee.replace("I", "1")
+
+    return _DATE_I_RE.sub(rendre, text), compte[0]
+
+
 def apply_ocr_fixes(text: str) -> tuple[str, int]:
     """Corrige les confusions OCR les plus sûres.
 
@@ -592,6 +617,8 @@ def apply_ocr_fixes(text: str) -> tuple[str, int]:
     ces motifs seraient au mieux inutiles, au pire destructeurs.
     """
     text, count = restore_decorative_o(text)
+    text, n = fix_typewriter_one_in_dates(text)
+    count += n
     for pattern, replacement in OCR_CONFUSION_RULES:
         text, substitutions = pattern.subn(replacement, text)
         count += substitutions
