@@ -1,6 +1,6 @@
 # Avancement de BLDP
 
-_Mis à jour automatiquement le 2026-10-10 02:28 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
+_Mis à jour automatiquement le 2026-10-10 02:30 UTC par `exploitation/avancement.py` — ne pas éditer à la main._
 
 ## Méthode en cours
 
@@ -19,11 +19,11 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 | Catégorie | Documents | Lus | Vérifiés par Gemini | Versés (base propre) | À revoir (humain) |
 |---|---:|---:|---:|---:|---:|
 | arrete | 2 | 2 | 2 | 2 | 0 |
-| decision | 2 | 2 | 2 | 1 | 1 |
-| accord | 12 | 12 | 12 | 6 | 6 |
-| ordonnance | 977 | 50 | 50 | 24 | 26 |
+| decision | 2 | 2 | 2 | 2 | 0 |
+| accord | 12 | 12 | 12 | 12 | 0 |
+| ordonnance | 977 | 50 | 50 | 31 | 19 |
 | loi | 1529 | 0 | 0 | 0 | 0 |
-| **total** | **2522** | **66** | **66** | **33** | **33** |
+| **total** | **2522** | **66** | **66** | **47** | **19** |
 
 ## Tranches (2/52 intégrées)
 
@@ -81,6 +81,15 @@ La validation définitive reste humaine (§16) : `valide` n'est jamais posé par
 | T050 | loi 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T051 | loi 50 | 50 | — | A_LANCER | — | — | — | — | — | — | — |
 | T052 | loi 29 | 29 | — | A_LANCER | — | — | — | — | — | — | — |
+
+## Reprises (documents « à revoir » repris après une correction du pipeline)
+
+| Reprise | Documents | Intégrée | Conformes | Corrigés | Toujours à revoir |
+|---|---:|---|---:|---:|---:|
+| T001R1 | 7 | 2026-10-10 | 2 | 5 | — |
+| T002R1 | 26 | 2026-10-10 | — | 7 | 19 |
+
+File humaine actuelle : 19 document(s), listés sur le VPS dans `propre/lot1/a_revoir_humain_actuel.csv` (la dernière vérification fait foi).
 
 ## Registre de suivi (base propre du lot)
 
