@@ -90,3 +90,14 @@ class TestLatexHorsDollars:
 
     def test_dollars_ordinaires_intacts(self):
         assert strip_reader_markup("5 $ et 6 $ US") == ("5 $ et 6 $ US", 0)
+
+
+class TestRestesT003:
+    def test_latex_nu_et_entites(self):
+        assert strip_reader_markup("ORDONNANCE N° \\underline{9} /PR")[0] == "ORDONNANCE N° 9 /PR"
+        assert strip_reader_markup("l&#x27;article 3 &amp; 4")[0] == "l'article 3 & 4"
+
+    def test_decrit_devant_un_numero(self):
+        from bldp.core.cleaning.normalizer import apply_ocr_fixes
+        assert apply_ocr_fixes("VU le Décrit n° 215/PR du 16 Mai 1966")[0] == "VU le Décret n° 215/PR du 16 Mai 1966"
+        assert apply_ocr_fixes("le régime décrit ci-dessous")[0] == "le régime décrit ci-dessous"

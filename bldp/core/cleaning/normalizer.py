@@ -139,6 +139,10 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # « Artiole », « ARTIOLE » : le c lu o. Lot 1, tranche T002 : 13 articles de la Loi
     # fondamentale de 1977 (ordonnance 77-32) manquaient pour cette seule lecture.
     (re.compile(r"\bArtiole\b"), "Article"),
+    # « VU le Décrit n° 215/PR » : le e de Décret frappé ou lu i. Devant un numéro
+    # seulement, où « décrit » (participe) n'a pas de sens. Tranches T002-T003.
+    (re.compile(r"\bDécrit(?=\s*n\s*[°o])", re.IGNORECASE), "Décret"),
+    (re.compile(r"\bDECRIT(?=\s*N\s*[°O])"), "DECRET"),
     (re.compile(r"\bARTIOLE\b"), "ARTICLE"),
     (re.compile(r"(?!Article\b)\bAr[tU][Ui]?cle\b"), "Article"),
     (re.compile(r"\bAdi[cd]le\b"), "Article"),
@@ -493,6 +497,10 @@ _HTML_BALISE_RE = re.compile(
 #: LaTeX resté hors de ses « $ » : « N^{\circ} », « 1^{er} » (lot 1, reprise T002R1).
 _LATEX_NU_RE = re.compile(r"\^\{\\circ\}|\^\{(?:\\text\{)?(er|re|e|ème|eme)\}?\}")
 #: « $ ORDONNANCE $ » : des « $ » autour de mots en capitales seulement.
+#: « \underline{9} », « \text{…} » restés hors de leurs « $ » (tranche T003).
+_LATEX_COMMANDE_NUE_RE = re.compile(r"\\(?:underline|overline|text|textbf|textit|mathrm|emph)\s*\{([^{}]*)\}")
+#: Entités HTML laissées par le lecteur : « &#x27; », « &amp; », « &quot; » (tranche T003).
+_ENTITE_HTML_RE = re.compile(r"&(?:#x?[0-9A-Fa-f]{1,6}|amp|quot|apos|lt|gt|nbsp);")
 _DOLLARS_CAPITALES_RE = re.compile(r"\$[ \t]*([A-ZÀ-Ý][A-ZÀ-Ý '’.-]{2,60}?)[ \t]*\$")
 _MD_GRAS_RE = re.compile(r"\*\*(?=\S)([^*\n]+?)(?<=\S)\*\*")
 _MD_TITRE_RE = re.compile(r"^[ \t]{0,3}#{1,6}[ \t]+", re.MULTILINE)
@@ -551,6 +559,13 @@ def strip_reader_markup(text: str) -> tuple[str, int]:
 
     if "$" in text:
         text = _LATEX_SEGMENT_RE.sub(segment, text)
+    if "\\" in text:
+        text, n = _LATEX_COMMANDE_NUE_RE.subn(r"\1", text)
+        compte[0] += n
+    if "&" in text:
+        import html as _html
+        text, n = _ENTITE_HTML_RE.subn(lambda m: _html.unescape(m.group(0)), text)
+        compte[0] += n
     if "^{" in text:
         text, n = _LATEX_NU_RE.subn(lambda m: m.group(1) or "°", text)
         compte[0] += n
