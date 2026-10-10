@@ -84,3 +84,9 @@ def test_variantes_t003():
     assert apply_ocr_fixes("fin.\nA article 52.- Le juge")[0] == "fin.\nArticle 52.- Le juge"
     assert apply_ocr_fixes("ORDONNE\n_ticle ler.- Est")[0] == "ORDONNE\nArticle 1er.- Est"
     assert apply_ocr_fixes("à article 52 de la loi")[0] == "à article 52 de la loi"
+
+
+def test_variantes_t004():
+    assert apply_ocr_fixes("ARSIOLE 2.- Les Hautes Parties")[0] == "ARTICLE 2.- Les Hautes Parties"
+    assert apply_ocr_fixes("ARTICLE 1er!- Sont ouverts")[0] == "ARTICLE 1er.- Sont ouverts"
+    assert apply_ocr_fixes("Attention!- fin")[0] == "Attention!- fin"

@@ -139,6 +139,10 @@ OCR_CONFUSION_RULES: tuple[tuple[re.Pattern[str], str], ...] = (
     # « Artiole », « ARTIOLE » : le c lu o. Lot 1, tranche T002 : 13 articles de la Loi
     # fondamentale de 1977 (ordonnance 77-32) manquaient pour cette seule lecture.
     (re.compile(r"\bArtiole\b"), "Article"),
+    # Tranche T004 : « ARSIOLE 2.- » (t lu s, c lu i) ; « ARTICLE 1er!- » (point lu « ! »).
+    (re.compile(r"\bArsiole\b"), "Article"),
+    (re.compile(r"\bARSIOLE\b"), "ARTICLE"),
+    (re.compile(r"(?<=\b(?:ARTICLE|Article) )(\d{1,4}(?:er)?)!(?=\s*-)"), r"\1."),
     # Tranche T003 : « Articlo », « Articolo » (e lu o), « A article 52.- » (A parasite en
     # début de ligne), « _ticle ler.- » (« Ar » perdu). Toujours en tête de ligne et devant
     # un numéro, là où seul un en-tête d'article a ce sens.
