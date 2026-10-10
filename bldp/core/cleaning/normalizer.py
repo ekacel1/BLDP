@@ -563,13 +563,25 @@ def strip_reader_markup(text: str) -> tuple[str, int]:
     return text, compte[0]
 
 
+#: Le « O » décoratif des en-têtes dactylographiés (« ⃞ R D O N N E »), dessiné comme
+#: une case, est lu « (二) », « (一) », « (_) » ou disparaît : « RDONNANCE », « R D O N N E ».
+#: Lot 1, tranche T002 : la moitié des ordonnances de 1963-1968. On ne rend le « O » que
+#: devant « R D O N N », jamais ailleurs ; aucun mot français ne commence par « RDONN ».
+_O_DECORATIF_RE = re.compile(r"(?:\(\s*[二一_\-]?\s*\)|[二一])?[ \t]*(?<![A-Za-zÀ-ÿ])(?<!O )(R(\s?)D\s?O\s?N\s?N)")
+
+
+def restore_decorative_o(text: str) -> tuple[str, int]:
+    """Rend le « O » décoratif de « ORDONNE » / « ORDONNANCE » (voir ``_O_DECORATIF_RE``)."""
+    return _O_DECORATIF_RE.subn(lambda m: "O" + m.group(2) + m.group(1), text)
+
+
 def apply_ocr_fixes(text: str) -> tuple[str, int]:
     """Corrige les confusions OCR les plus sûres.
 
     Uniquement appliqué aux documents réellement OCRisés : sur un texte natif,
     ces motifs seraient au mieux inutiles, au pire destructeurs.
     """
-    count = 0
+    text, count = restore_decorative_o(text)
     for pattern, replacement in OCR_CONFUSION_RULES:
         text, substitutions = pattern.subn(replacement, text)
         count += substitutions

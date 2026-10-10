@@ -114,6 +114,39 @@ def page_quality(page: Page) -> float:
 # ---------------------------------------------------------------------------
 
 
+#: Écritures sans rapport avec un texte juridique béninois en français : hébreu, arabe,
+#: écritures indiennes (dont le tamoul), thaï, lao, tibétain, coréen, kana, idéogrammes.
+_ECRITURE_ETRANGERE_RE = re.compile(
+    "[֐-ۿऀ-෿฀-໿ༀ-࿿ᄀ-ᇿ"
+    "぀-ヿ㐀-䶿一-鿿가-힯]"
+)
+
+
+def lecture_inventee(texte: str) -> str | None:
+    """Dit pourquoi un texte semble inventé par la lecture, ou ``None``.
+
+    Les lecteurs vision-langage (PaddleOCR-VL…) comblent parfois une zone vide ou
+    tachée : caractères chinois, tamouls ou tibétains, ou boucle sans fin
+    (« x1=-1 x2=-2 … x359=-359 »). Lot 1, tranche T002. Une répétition n'est retenue
+    que si elle porte une lettre ou un « = » : une colonne de chiffres n'en est pas une.
+    """
+    m = _ECRITURE_ETRANGERE_RE.search(texte or "")
+    if m:
+        return f"écriture étrangère au texte (« {texte[max(0, m.start() - 10):m.end() + 10]} »)"
+    jetons = [re.sub(r"\d+", "9", j) for j in (texte or "").split()]
+    for periode in (1, 2):
+        suite = 1
+        for k in range(periode, len(jetons)):
+            fenetre = " ".join(jetons[k - periode:k + 1])
+            if jetons[k] == jetons[k - periode] and re.search(r"[A-Za-z=]", fenetre):
+                suite += 1
+                if suite >= 20 * periode:
+                    return f"boucle de répétition (« {fenetre} » …)"
+            else:
+                suite = 1
+    return None
+
+
 def check_pages(document: Document, config: Config) -> tuple[float, list[QualityIssue], dict]:
     """Contrôles portant sur les pages extraites."""
     issues: list[QualityIssue] = []
@@ -204,6 +237,20 @@ def check_pages(document: Document, config: Config) -> tuple[float, list[Quality
                 )
             )
             break
+
+    # Texte inventé par un lecteur vision-langage : signalé, jamais supprimé — le
+    # vérificateur tranche contre la photo.
+    for page in pages:
+        motif = lecture_inventee(page.text)
+        if motif:
+            issues.append(
+                QualityIssue(
+                    code="lecture_inventee_probable",
+                    severity="warning",
+                    message=f"texte probablement inventé par la lecture : {motif}",
+                    page=page.page,
+                )
+            )
 
     scores = [page_quality(page) for page in pages]
     text_quality = round(sum(scores) / len(scores), 4) if scores else 0.0
